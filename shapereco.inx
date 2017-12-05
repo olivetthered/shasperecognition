@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+  <_name>Shape recognition</_name>
+  <id>qpad</id>
+  <dependency type="executable" location="extensions">shapereco.py</dependency>
+  <dependency type="executable" location="extensions">inkex.py</dependency>
+  <_param name="title" type="description">Simple shape
+  recognition. From a selection of one or many path, find strait
+  lines, recognizes those parallel or with similar angles or
+  lenght. Recognizes rectangles, circle and ellipses. </_param>
+  <param name="keepOrigin" type="boolean" _gui-text="Keep origin path">false</param>
+  <effect>
+    <object-type>path</object-type>
+    <effects-menu>
+      <submenu _name="Generate from Path"/>
+    </effects-menu>
+  </effect>
+  <script>
+    <command reldir="extensions" interpreter="python">shapereco.py</command>
+  </script>
+</inkscape-extension>
