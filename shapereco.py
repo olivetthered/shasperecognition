@@ -126,7 +126,7 @@ def set_debug_on():
     global debug
     debug = debug_on
 
-
+#set_debug_on()
 
 # *************************************************************
 # Internal Objects
@@ -902,8 +902,8 @@ class SegmentRec(inkex.Effect):
             p.effectiveNPoints = 0
             if next != prev:
                 prev.setIntersectWithNext(next)
-            for p in removeSeg:
-                paths.remove(p)
+        for p in removeSeg:
+            paths.remove(p)
 
 
     def distancesRatios(self, points):
