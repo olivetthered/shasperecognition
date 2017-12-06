@@ -142,7 +142,7 @@ def set_debug_on():
     global debug
     debug = debug_on
 
-#set_debug_on()
+set_debug_on()
 
 # *************************************************************
 # Internal Objects
@@ -828,6 +828,119 @@ def mergeConsecutiveParralels(segments):
         debug("merged parallel ", segments , '-->', newList)
     return newList
 
+
+
+##**************************************
+## 
+class SegmentExtender:
+    """Extend Segments from a list of Path by aggregating points in neighbours Path objects.
+
+    There are 2 concrete subclass for extending forward and backward (due to technical reasons).
+    """
+    def nextPaths(self,seg):
+        pL = []
+        p = self.getNext(seg) # prev or next
+        while p :
+            if p.isSegment(): break
+            pL.append(p)
+            p = self.getNext(p)
+        if pL==[]:
+            return [], []
+        i0=pL[0].startIndexSource
+        iN = pL[-1].startIndexSource+len(pL[-1].points)+1
+        return pL, seg.sourcepoints[i0:iN]
+
+    def extend(self,seg):
+        nextPathL, pointsToTest = self.nextPaths(seg)
+        debug('extend ',self.extDir, seg , nextPathL)
+        if nextPathL==[]: return seg
+        distancesToLine =abs(seg.a*pointsToTest[:,0]+seg.b*pointsToTest[:,1]+seg.c)
+        mergeD = seg.length*0.03
+        pointsToFit, addedPoints = self.pointsToFit(seg,pointsToTest, distancesToLine, mergeD)
+        if len(pointsToFit)==0:
+            return seg
+        newseg = fitSingleSegment(pointsToFit)
+        if newseg.quality()>0.5: # fit failed
+            return seg
+        debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
+        self.removePath(seg, newseg, nextPathL, addedPoints )
+        newseg.points = pointsToFit
+        seg.mergedObj= newseg
+        newseg.sourcepoints = seg.sourcepoints
+
+        return newseg
+
+    @staticmethod
+    def extendSegments(segmentList):
+        """Perform Segment extension from list of Path segmentList
+        returns the updated list of Path objects"""
+        fwdExt = FwdExtender()
+        bwdExt = BwdExtender()
+        # tag all objects with an attribute pointing to the extended object
+        for seg in segmentList:            
+            seg.mergedObj = seg # by default the extended object is self
+        # extend each segments, starting by the longest 
+        for seg in sorted(segmentList, key = lambda s : s.length, reverse=True):
+            if seg.isSegment():
+                newseg=fwdExt.extend(seg)
+                seg.mergedObj = bwdExt.extend(newseg)
+        # the extension procedure has marked as None the mergedObj
+        # which have been swallowed by an extension.
+        #  filter them out :
+        updatedSegs=[seg.mergedObj for seg in segmentList if seg.mergedObj]
+        return updatedSegs
+
+
+class FwdExtender(SegmentExtender):
+    extDir='Fwd'
+    def getNext(self, seg):
+        return seg.next
+    def pointsToFit(self, seg, pointsToTest, distancesToLine, mergeD):
+        for i,d in reversed(list(enumerate(distancesToLine))):
+            if d<mergeD: break
+        addedPoints = pointsToTest[i:]
+        debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
+        return  numpy.concatenate([seg.points, addedPoints]), addedPoints
+    def removePath(self, seg, newseg, nextPathL, pointsToFit):
+        npoints = len(pointsToFit)
+        acc=0
+        newseg.prev = seg.prev
+        for p in nextPathL:
+            if (acc+len(p.points))<=npoints:
+                p.mergedObj = None
+                acc += len(p.points)
+            else:
+                newseg.next = p
+                p.points = p.points[:(npoints-acc-len(p.points))]
+                break
+
+class BwdExtender(SegmentExtender):
+    extDir='Bwd'
+    def getNext(self, seg):
+        return seg.prev
+    def pointsToFit(self, seg, pointsToTest, distancesToLine, mergeD):
+        for i,d in enumerate(distancesToLine):
+            if d<mergeD: break
+        addedPoints = pointsToTest[:i+1]
+        debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
+        return  numpy.concatenate([addedPoints, seg.points]), addedPoints
+    def removePath(self,seg, newseg, nextPathL, pointsToFit):
+        npoints = len(pointsToFit)
+        acc=0
+        newseg.next = seg.next                
+        for p in reversed(nextPathL):
+            if (acc+len(p.points))<=npoints:
+                p.mergedObj = None
+                acc += len(p.points)
+            else:
+                newseg.prev = p        
+                p.points = p.points[(npoints-acc-len(p.points)):]                        
+                break
+
+
+
+
+
 def parametersFromPointAngle(point, angle):
     unitv = numpy.array([ numpy.cos(angle), numpy.sin(angle) ])
     ortangle = angle+numpy.pi/2
@@ -1189,10 +1302,11 @@ class ShapeReco(inkex.Effect):
         if len(points)<6:
             return False, 0
         xmin,ymin, w, h = computeBox( points)
-        d2 = D2(points[0], points[-1] )
         diag2=(w*w+h*h)
-        if d2 > diag2*(0.1*0.1):
-            return False,0
+        ## d2 = D2(points[0], points[-1] )
+        ## if d2 > diag2*(0.1*0.1):
+        ##     debug(' Circle : Not closing !')
+        ##     return False,0
         
         diag = sqrt(diag2)*0.5
         norms = numpy.sqrt(numpy.sum( tangents**2, 1 ))
@@ -1265,23 +1379,27 @@ class ShapeReco(inkex.Effect):
         sourcepoints, svgCommandsList = toArray(svgCommandsList)
         tangents = buildTangents(sourcepoints)
 
-        # Check if circle -----------------------
-        isCircle, res = self.checkForCircle( sourcepoints, tangents)        
-        if isCircle:
-            x,y,rmin, rmax,angle = res
-            if rmin/rmax>0.8:
-                circ = Circle((x,y),0.5*(rmin+rmax), [], refNode )
-            else:
-                circ = Circle((x,y),rmin, [], refNode, rmax=rmax, angle=angle)
-            circ.points = sourcepoints
-            return circ
-        debug("Is Circle = ", isCircle )
-
         # global quantities :
         x,y,wTot,hTot = computeBox(sourcepoints)
-        minDim = min(wTot, hTot)
-        forceClose = False#minDim*0.1 > D(a[0],a[-1])
-        debug('forceClose ', forceClose)
+        aR = min(wTot/hTot, hTot/wTot)
+        maxDim = max(wTot, hTot)
+        d = D(sourcepoints[0],sourcepoints[-1])
+        isClosing = aR*0.2 > d/maxDim
+        debug('isClosing ', isClosing, maxDim, d)
+
+        # Check if circle -----------------------
+        if isClosing:
+            isCircle, res = self.checkForCircle( sourcepoints, tangents)        
+            if isCircle:
+                x,y,rmin, rmax,angle = res
+                if rmin/rmax>0.8:
+                    circ = Circle((x,y),0.5*(rmin+rmax), [], refNode )
+                else:
+                    circ = Circle((x,y),rmin, [], refNode, rmax=rmax, angle=angle)
+                circ.points = sourcepoints
+                return circ
+            debug("Is Circle = ", isCircle )
+
 
 
         # cluster points by angle of their tangents -------------
@@ -1306,7 +1424,8 @@ class ShapeReco(inkex.Effect):
         debug(newSegs)
         # -----------------------
 
-        # Merge consecutive paths
+        # -----------------------
+        # Merge consecutive Path objects 
         updatedSegs=[]
         def toMerge(p):
             l=[p]
@@ -1336,100 +1455,6 @@ class ShapeReco(inkex.Effect):
 
 
         # Extend segments -----------------------------------
-        class SegmentExtender:
-            def nextPaths(self,seg):
-                pL = []
-                p = self.getNext(seg) # prev or next
-                while p :
-                    if p.isSegment(): break
-                    pL.append(p)
-                    p = self.getNext(p)
-                if pL==[]:
-                    return [], []
-                i0=pL[0].startIndexSource
-                iN = pL[-1].startIndexSource+len(pL[-1].points)+1
-                return pL, seg.sourcepoints[i0:iN]
-            
-            def extend(self,seg):
-                nextPathL, pointsToTest = self.nextPaths(seg)
-                debug('extend ',self.extDir, seg , nextPathL)
-                if nextPathL==[]: return seg
-                distancesToLine =abs(seg.a*pointsToTest[:,0]+seg.b*pointsToTest[:,1]+seg.c)
-                mergeD = seg.length*0.03
-                pointsToFit, addedPoints = self.pointsToFit(seg,pointsToTest, distancesToLine, mergeD)
-                if len(pointsToFit)==0:
-                    return seg
-                newseg = fitSingleSegment(pointsToFit)
-                if newseg.quality()>0.5: # fit failed
-                    return seg
-                debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
-                self.removePath(seg, newseg, nextPathL, addedPoints )
-                newseg.points = pointsToFit
-                seg.mergedObj= newseg
-                newseg.sourcepoints = seg.sourcepoints
-                
-                return newseg
-
-            @staticmethod
-            def extendSegments(newSegs):
-                fwdExt = FwdExtender()
-                bwdExt = BwdExtender()
-                for seg in newSegs:
-                    seg.mergedObj = seg
-                for seg in sorted(newSegs, key = lambda s : s.length, reverse=True):
-                    if seg.isSegment():
-                        newseg=fwdExt.extend(seg)
-                        seg.mergedObj = bwdExt.extend(newseg)
-                updatedSegs=[seg.mergedObj for seg in newSegs if seg.mergedObj]
-                return updatedSegs
-
-
-        class FwdExtender(SegmentExtender):
-            extDir='Fwd'
-            def getNext(self, seg):
-                return seg.next
-            def pointsToFit(self, seg, pointsToTest, distancesToLine, mergeD):
-                for i,d in reversed(list(enumerate(distancesToLine))):
-                    if d<mergeD: break
-                addedPoints = pointsToTest[i:]
-                debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
-                return  numpy.concatenate([seg.points, addedPoints]), addedPoints
-            def removePath(self, seg, newseg, nextPathL, pointsToFit):
-                npoints = len(pointsToFit)
-                acc=0
-                newseg.prev = seg.prev
-                for p in nextPathL:
-                    if (acc+len(p.points))<=npoints:
-                        p.mergedObj = None
-                        acc += len(p.points)
-                    else:
-                        newseg.next = p
-                        p.points = p.points[:(npoints-acc-len(p.points))]
-                        break
-
-        class BwdExtender(SegmentExtender):
-            extDir='Bwd'
-            def getNext(self, seg):
-                return seg.prev
-            def pointsToFit(self, seg, pointsToTest, distancesToLine, mergeD):
-                for i,d in enumerate(distancesToLine):
-                    if d<mergeD: break
-                addedPoints = pointsToTest[:i+1]
-                debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
-                return  numpy.concatenate([addedPoints, seg.points]), addedPoints
-            def removePath(self,seg, newseg, nextPathL, pointsToFit):
-                npoints = len(pointsToFit)
-                acc=0
-                newseg.next = seg.next                
-                for p in reversed(nextPathL):
-                    if (acc+len(p.points))<=npoints:
-                        p.mergedObj = None
-                        acc += len(p.points)
-                    else:
-                        newseg.prev = p        
-                        p.points = p.points[(npoints-acc-len(p.points)):]                        
-                        break
-                
 
         newSegs = SegmentExtender.extendSegments( newSegs )
         debug("extended segs", newSegs)
@@ -1520,8 +1545,8 @@ class ShapeReco(inkex.Effect):
                 p.setIntersectWithNext()
         # -----------------------------------------------------
 
-        if forceClose:            
-            newSegs[-1].setIntersectWithNext(newSegs[0])
+        ## if forceClose:            
+        ##     newSegs[-1].setIntersectWithNext(newSegs[0])
         
         return PathGroup(newSegs, svgCommandsList, refNode)
 
