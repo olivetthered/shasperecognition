@@ -80,7 +80,8 @@ unrotMat = numpy.matrix( [[1,1],[-1,1]] )/numpy.sqrt(2)
 
 def setupKnownAngles():
     pi = numpy.pi
-    l = [ i*pi/8 for i in range(0, 9)] +[ i*pi/6 for i in [1,2,4,5,] ]
+    #l = [ i*pi/8 for i in range(0, 9)] +[ i*pi/6 for i in [1,2,4,5,] ]
+    l = [ i*pi/8 for i in range(0, 9)] +[ i*pi/6 for i in [1,2,4,5,] ] + [i*pi/12 for i in (1,5,7,11)]
     knownAngle = numpy.array( l )
     return numpy.concatenate( [-knownAngle[:0:-1], knownAngle ])
 knownAngle = setupKnownAngles()
@@ -139,11 +140,8 @@ def debug_on(*l):
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
 
-def set_debug_on():
-    global debug
-    debug = debug_on
 
-set_debug_on()
+#set_debug_on()
 
 # *************************************************************
 # Internal Objects
@@ -532,7 +530,7 @@ class Circle(PathGroup):
     def __init__(self, center, rad,  refNode=None, rmax=None, angle=0.):
         self.listOfPaths = []
         self.refNode = refNode
-        self.center = center
+        self.center = numpy.array(center)
         self.radius = rad
         if rmax:
             self.type ='ellipse'
@@ -1348,8 +1346,18 @@ class ShapeReco(inkex.Effect):
             
         return allDist
 
-        
-        
+    def alignCircSegments(self, circles, segments, relSize=0.15):
+        for circ in circles:
+            circ.moved = False
+        for seg in segments:
+            for circ in circles:                
+                d = seg.distanceTo(circ.center)
+                debug(' align ',circ, d, '  ',circ.center, ' d=',d, circ.radius)
+                debug( '      ', seg.projectPoint(circ.center))
+                if d < circ.radius*relSize and not circ.moved :
+                    circ.center = seg.projectPoint(circ.center)
+                    circ.moved = True
+                
 
     def adjustToKnownAngle(self, paths):
         """ Check current angle against remarkable angles. If close enough, change it
@@ -1357,9 +1365,11 @@ class ShapeReco(inkex.Effect):
         for seg in paths:
             a = seg.tempAngle()
             i = (abs(knownAngle - a )).argmin()
-            if abs(knownAngle[i] - a) < 0.08:
-                debug( '  Known angle ', seg.tempAngle(),'  -> ', knownAngle[i]) 
-                seg.newAngle = knownAngle[i]
+            seg.newAngle = knownAngle[i]
+            debug( '  Known angle ', seg.tempAngle(),'  -> ', knownAngle[i]) 
+            ## if abs(knownAngle[i] - a) < 0.08:
+            ##     debug( '  Known angle ', seg.tempAngle(),'  -> ', knownAngle[i]) 
+            ##     seg.newAngle = knownAngle[i]
 
         
 
@@ -1701,7 +1711,7 @@ class ShapeReco(inkex.Effect):
                 adjustAllDistances(group.listOfPaths)            
             circles=[ group for group in analyzedNodes if isinstance(group, Circle)]
             self.prepareRadiusEqualization(circles, allShapeDist)
-                    
+            self.alignCircSegments(circles, allSegs)
 
         # add new shapes in SVG document
         for group in analyzedNodes:            
