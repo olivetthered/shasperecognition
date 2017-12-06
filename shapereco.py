@@ -15,7 +15,8 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-barraud@math.univ-lille1.fr
+
+
 
 Quick description:
 This extension uses all selected path, ignoring all other selected objects.
@@ -47,7 +48,7 @@ numpy.set_printoptions(precision=3)
 def toArray(parsedList):
     """Interprets a list of [(command, args),...]
     where command is a letter coding for a svg path command
-          args are the argument of the above command
+          args are the argument of the command
     """
     interpretCommand = {
         'C' : lambda x, prevL : x[-2:], # bezier curve. Ignore the curve.
@@ -525,11 +526,11 @@ class Circle(PathGroup):
     """Specialization where the list of Path objects
     is to be replaced by a Circle specified by a center and a radius.
 
-    If an other radius 'rmax' is given than this represent an ellipse.
+    If an other radius 'rmax' is given than the object represents an ellipse.
     """
 
-    def __init__(self, center, rad, listOfPaths, refNode=None, rmax=None, angle=0.):
-        self.listOfPaths = listOfPaths
+    def __init__(self, center, rad,  refNode=None, rmax=None, angle=0.):
+        self.listOfPaths = []
         self.refNode = refNode
         self.center = center
         self.radius = rad
@@ -862,7 +863,7 @@ class SegmentExtender:
         newseg = fitSingleSegment(pointsToFit)
         if newseg.quality()>0.5: # fit failed
             return seg
-        debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
+        #debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
         self.removePath(seg, newseg, nextPathL, addedPoints )
         newseg.points = pointsToFit
         seg.mergedObj= newseg
@@ -899,7 +900,7 @@ class FwdExtender(SegmentExtender):
         for i,d in reversed(list(enumerate(distancesToLine))):
             if d<mergeD: break
         addedPoints = pointsToTest[i:]
-        debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
+        #debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
         return  numpy.concatenate([seg.points, addedPoints]), addedPoints
     def removePath(self, seg, newseg, nextPathL, pointsToFit):
         npoints = len(pointsToFit)
@@ -922,7 +923,7 @@ class BwdExtender(SegmentExtender):
         for i,d in enumerate(distancesToLine):
             if d<mergeD: break
         addedPoints = pointsToTest[:i+1]
-        debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
+        #debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
         return  numpy.concatenate([addedPoints, seg.points]), addedPoints
     def removePath(self,seg, newseg, nextPathL, pointsToFit):
         npoints = len(pointsToFit)
@@ -987,9 +988,89 @@ def reformatList( refSVGPathList, paths):
             newList += refSVGPathList[pos:pos+seg.effectiveNPoints]
         first = False
     return newList
+
+
+def clusterValues( values, relS=0.1  ):
+    if len(values)==0:
+        return []
+    if len(values.shape)==1:
+        sortedV = numpy.stack([ values , numpy.arange(len(values))] ,1)
+    else:
+        # Assume value.shape = (N,2) and index are ok
+        sortedV = values 
+    sortedV = sortedV[ numpy.argsort(sortedV[:,0]) ]
+
+    sortedVV = sortedV[:,0]
+    totDelta = sortedVV[-1]-sortedVV[0]
+    #sortedVV += 2*min(sortedVV)) # shift to avoid numerical issues around 0
+
+    #print sortedVV
+    class Cluster:
+        def __init__(self, delta, sum, indices):
+            self.delta = delta
+            self.sum = sum
+            self.N=len(indices)
+            self.indices = indices
+        def size(self):
+            return self.delta/totDelta
         
+        def combine(self, c):
+            #print ' combine ', self.indices[0], c.indices[-1], ' -> ', sortedVV[c.indices[-1]] - sortedVV[self.indices[0]]
+            newC = Cluster(sortedVV[c.indices[-1]] - sortedVV[self.indices[0]],
+                           self.sum+c.sum,
+                           self.indices+c.indices)
+            return newC
 
+        def originIndices(self):
+            return tuple(int(sortedV[i][1]) for i in self.indices)
+        
+    class ClusterPair:
+        next=None
+        prev=None
+        def __init__(self, c1, c2 ):
+            self.c1=c1
+            self.c2=c2
+            self.refresh()
+        def refresh(self):
+            self.potentialC =self.c1.combine(self.c2)
+            self.size = self.potentialC.size()
+        def setC1(self, c1):
+            self.c1=c1
+            self.refresh()
+        def setC2(self, c2):
+            self.c2=c2
+            self.refresh()
+            
+    #ave = 0.5*(sortedVV[1:,0]+sortedV[:-1,0])
+    #deltaR = (sortedV[1:,0]-sortedV[:-1,0])/ave
 
+    cList = [Cluster(0,v,(i,)) for (i,v) in enumerate(sortedVV) ]
+    cpList = [ ClusterPair( c, cList[i+1] ) for (i,c) in enumerate(cList[:-1]) ]
+    resetPrevNextSegment( cpList )
+
+    def reduceCL( cList ):
+        if len(cList)<=1:
+            return cList
+        cp = min(cList, key=lambda cp:cp.size)
+        #print '==', cp.size , cp.c1.indices , cp.c2.indices
+        if cp.size > relS:
+            return cList
+        if cp.next:
+            cp.next.setC1(cp.potentialC)
+            cp.next.prev = cp.prev
+        if cp.prev:
+            cp.prev.setC2(cp.potentialC)
+            cp.prev.next = cp.next
+        cList.remove(cp)
+        return reduceCL(cList)
+
+    cpList = reduceCL(cpList)
+
+    #print cpList
+    if cpList==[]:
+        return []
+    finalCL = [ cp.c1.originIndices() for cp in cpList ]+[ cpList[-1].c2.originIndices() ]
+    return finalCL
 
 
 
@@ -1225,55 +1306,49 @@ class ShapeReco(inkex.Effect):
         segs : a list of segments
         relDelta : float, minimum relative distance.
         """
-        lengths= sorted(  (x.tempLength() ,i) for i,x in enumerate(segs)  )
-        debug( '___  lengths ',lengths)
 
-        def findgroups(ls, startPos=0 ):
-            maxgroupdelta = 0
-            maxgrouppos = ()
-            #print '  ccc find groups in ', ls
-            for i,d in enumerate(ls):
-                thisD = d[0]
-                delta = thisD*relDelta
-                first, last = i-1,i+1
-                while first>-1:
-                    if thisD-ls[first][0] > delta:
-                        break
-                    first-=1
-                first +=1
-                while last<len(ls):
-                    if ls[last][0]-thisD > delta:
-                        break
-                    last+=1
-                last -= 1
-                #print i,'     --> ',last , first, delta
-                if last-first > maxgroupdelta:
-                    maxgroupdelta = last-first
-                    maxgrouppos = (first,last)
-            #print ' ====> maxgroupdelta ',maxgroupdelta, ' // ',maxgrouppos
-            l = []
-            if maxgroupdelta >0 :
-                l += [ (maxgrouppos[0]+startPos, maxgrouppos[1]+startPos) ]
-                debug( '   dist eq , ', maxgrouppos )
-                l+= findgroups( ls[:maxgrouppos[0]], startPos)
-                l+=findgroups( ls[maxgrouppos[1]+1:], startPos+maxgrouppos[1]+1)
-            return l
+        lengths = numpy.array( [x.tempLength() for x in segs] )
+        clusters = clusterValues(lengths)
 
-        sameDistGroups = findgroups(lengths)
-
-        if len(sameDistGroups)==1 :
+        if len(clusters)==1:
             # deal with special case with low num of segments
             # --> don't let a single segment alone
-            nToChange = sameDistGroups[0][1] - sameDistGroups[0][0]+1
-            debug(' __ only 1 group ', len(lengths), nToChange)
-            if len(lengths)-nToChange ==1:
-                sameDistGroups[0] = (0,len(lengths)-1 )
-                
-        for f,l in sameDistGroups:
-            dmean = sum( d for (d,i) in lengths[f:l+1] )/ (l-f+1)
-            for d,i in lengths[f:l+1]:
+            if len(clusters[0])+1==len(segs):
+                clusters[0]=range(len(segs)) # all
+
+        allDist = []
+        for cl in clusters:
+            dmean = sum( lengths[i] for i in cl ) / len(cl)
+            allDist.append(dmean)
+            for i in cl:
                 segs[i].newLength = dmean
                 debug( i,' set newLength ',dmean, segs[i].length, segs[i].dumpShort())
+                
+        return allDist
+
+    def prepareRadiusEqualization(self, circles, otherDists, relSize=0.1):
+        ncircles = len(circles)
+        lengths = numpy.array( [c.radius for c in circles]+[2*c.radius for c in circles ]+otherDists )
+        indices = numpy.array( range(ncircles*2) +[-1]*len(otherDists) )
+        clusters = clusterValues(numpy.stack([ lengths, indices ],1 ) )
+
+        debug('prepareRadiusEqualization radisus ', [ (c.radius, c.rmax) for c in circles])
+        debug('prepareRadiusEqualization clusters ',  clusters)
+        allDist = []
+        for cl in clusters:
+            dmean = sum( lengths[i] for i in cl ) / len(cl)
+            allDist.append(dmean)
+            for i in cl:
+                if i==-1:
+                    continue
+                elif i< ncircles:
+                    circles[i].radius = dmean
+                else:
+                    circles[i-ncircles].radius = dmean*0.5
+            
+        return allDist
+
+        
         
 
     def adjustToKnownAngle(self, paths):
@@ -1313,7 +1388,7 @@ class ShapeReco(inkex.Effect):
         #print  'norms ', norms
         #debug( 'tangents ', tangents)
         angles = numpy.arccos( tangents[:,0] /norms ) *numpy.sign( tangents[:,1] )
-        #debug( 'angle = ', repr(angles))
+        debug( 'angle = ', repr(angles))
         N = len(angles)
         angles = smoothArray(angles, n=max(N/20,2) )
         deltas =  points[1:] - points[:-1] 
@@ -1345,11 +1420,26 @@ class ShapeReco(inkex.Effect):
         radius = points - numpy.array([xmin+w*0.5,ymin+h*0.5])
         radius_n = numpy.sqrt(numpy.sum( radius**2, 1 )) # normalize
 
-        rmin = min(radius_n)
-        maxi = numpy.argmax(radius_n)
+        mini = numpy.argmin(radius_n)        
+        rmin = radius_n[mini]
+        maxi = numpy.argmax(radius_n)        
         rmax = radius_n[maxi]
+        # void points around maxi and mini to make sure the 2nd max is found
+        # on the "other" side
+        n = len(radius_n)
+        radius_n[maxi]=0        
+        radius_n[mini]=0        
+        for i in range(1,n/8+1):
+            radius_n[(maxi+i)%n]=0
+            radius_n[(maxi-i)%n]=0
+            radius_n[(mini+i)%n]=0
+            radius_n[(mini-i)%n]=0
+        radius_n_2 = [ r for r in radius_n if r>0]
+        rmax_2 = max(radius_n_2)
+        rmin_2 = min(radius_n_2)
+        debug(' xxxxxxxxx ',rmin, rmin_2, ' |||| ',rmax, rmax_2, n/8+1)
         anglemax = numpy.arccos( radius[maxi][0]/rmax)*numpy.sign(radius[maxi][1])
-        return True, (xmin+w*0.5,ymin+h*0.5, rmin, rmax, anglemax)
+        return True, (xmin+w*0.5,ymin+h*0.5, 0.5*(rmin+rmin_2), 0.5*(rmax+rmax_2), anglemax)
 
 
 
@@ -1390,15 +1480,16 @@ class ShapeReco(inkex.Effect):
         # Check if circle -----------------------
         if isClosing:
             isCircle, res = self.checkForCircle( sourcepoints, tangents)        
+            debug("Is Circle = ", isCircle )
             if isCircle:
                 x,y,rmin, rmax,angle = res
-                if rmin/rmax>0.8:
-                    circ = Circle((x,y),0.5*(rmin+rmax), [], refNode )
+                debug("Circle -> ", rmin, rmax,angle )
+                if rmin/rmax>0.7:
+                    circ = Circle((x,y),0.5*(rmin+rmax),  refNode )
                 else:
-                    circ = Circle((x,y),rmin, [], refNode, rmax=rmax, angle=angle)
+                    circ = Circle((x,y),rmin,  refNode, rmax=rmax, angle=angle)
                 circ.points = sourcepoints
                 return circ
-            debug("Is Circle = ", isCircle )
 
 
 
@@ -1605,9 +1696,12 @@ class ShapeReco(inkex.Effect):
                 self.prepareDistanceEqualization([p for p in group.listOfPaths if p.isSegment()], 0.12)
                 adjustAllDistances(group.listOfPaths)            
             ## # then 2nd global pass, with tighter criteria
-            self.prepareDistanceEqualization(allSegs, 0.05)        
+            allShapeDist=self.prepareDistanceEqualization(allSegs, 0.05)
             for group in analyzedNodes:
                 adjustAllDistances(group.listOfPaths)            
+            circles=[ group for group in analyzedNodes if isinstance(group, Circle)]
+            self.prepareRadiusEqualization(circles, allShapeDist)
+                    
 
         # add new shapes in SVG document
         for group in analyzedNodes:            
