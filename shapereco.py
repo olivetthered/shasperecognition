@@ -511,13 +511,13 @@ class PathGroup(object):
         debug("PathGroup ", newList)
         return ele
 
-class TangeantEnvelop(PathGroup):
-    """Specialization where the Path objects are all Segments and represent tangeants to a curve """
+class TangentEnvelop(PathGroup):
+    """Specialization where the Path objects are all Segments and represent tangents to a curve """
     def addToNode(self, node):
         newList = [ ]
         for s in self.listOfPaths:
             newList += s.formatedSegment(firstP=True)
-        debug("TangeantEnvelop ", newList)
+        debug("TangentEnvelop ", newList)
         ele = addPath( newList , node)
         return ele
 
@@ -698,24 +698,24 @@ def smoothArray(a, n=2):
     #print smootha
     return smootha/count
 
-def buildTangeants( points , averaged=True):
-    tangeants = numpy.zeros( (len(points),2) )
+def buildTangents( points , averaged=True):
+    tangents = numpy.zeros( (len(points),2) )
     i=1
-    tangeants[:-i] += points[i:] - points[:-i] 
-    tangeants[i:]  += points[i:] - points[:-i] 
+    tangents[:-i] += points[i:] - points[:-i] 
+    tangents[i:]  += points[i:] - points[:-i] 
 
-    tangeants *= 0.5
-    tangeants[0] *=2
-    tangeants[-1] *=2
+    tangents *= 0.5
+    tangents[0] *=2
+    tangents[-1] *=2
 
     ## debug('points ', points)
-    ## debug('buildTangeants --> ', tangeants )
+    ## debug('buildTangents --> ', tangents )
     
     if averaged:
         # average over neighbours
-        avTan = numpy.array(tangeants)
-        avTan[:-1] += tangeants[1:]
-        avTan[1:]  += tangeants[:-1]
+        avTan = numpy.array(tangents)
+        avTan[:-1] += tangents[1:]
+        avTan[1:]  += tangents[:-1]
         avTan *= 1./3
         avTan[0] *=1.5
         avTan[-1] *=1.5
@@ -1175,10 +1175,10 @@ class ShapeReco(inkex.Effect):
 
         
 
-    def checkForCircle(self, points, tangeants):
-        """Determine if the points and their tangeants represent a circle
+    def checkForCircle(self, points, tangents):
+        """Determine if the points and their tangents represent a circle
 
-        Method : we consider angle of tangeant as function of lenght on path.
+        Method : we consider angle of tangent as function of lenght on path.
         For circles these are : angle = c1 x lenght + c0.
         We thus fit a line in the (angle, lenght) plane.
         If the path is made of line, angle will be constants for large section,
@@ -1195,10 +1195,10 @@ class ShapeReco(inkex.Effect):
             return False,0
         
         diag = sqrt(diag2)*0.5
-        norms = numpy.sqrt(numpy.sum( tangeants**2, 1 ))
+        norms = numpy.sqrt(numpy.sum( tangents**2, 1 ))
         #print  'norms ', norms
-        #debug( 'tangeants ', tangeants)
-        angles = numpy.arccos( tangeants[:,0] /norms ) *numpy.sign( tangeants[:,1] )
+        #debug( 'tangents ', tangents)
+        angles = numpy.arccos( tangents[:,0] /norms ) *numpy.sign( tangents[:,1] )
         #debug( 'angle = ', repr(angles))
         N = len(angles)
         angles = smoothArray(angles, n=max(N/20,2) )
@@ -1240,33 +1240,33 @@ class ShapeReco(inkex.Effect):
 
 
 
-    def tangeantEnvelop(self, svgCommandsList, refNode):
+    def tangentEnvelop(self, svgCommandsList, refNode):
         a, svgCommandsList = toArray(svgCommandsList)
-        tangeants = buildTangeants(a)
+        tangents = buildTangents(a)
 
-        newSegs = [ Segment.fromCenterAndDir( p, t ) for (p,t) in zip(a,tangeants) ]
+        newSegs = [ Segment.fromCenterAndDir( p, t ) for (p,t) in zip(a,tangents) ]
         debug("build envelop ", newSegs[0].point1 , newSegs[0].pointN)
         clustersInd = clusterAngles( [s.angle for s in newSegs] )
         debug("build envelop cluster:  ", clustersInd)
 
-        return TangeantEnvelop( newSegs, svgCommandsList, refNode)
+        return TangentEnvelop( newSegs, svgCommandsList, refNode)
 
 
-    def segsFromTangeants(self,svgCommandsList, refNode):
+    def segsFromTangents(self,svgCommandsList, refNode):
         """Finds segments part in a list of points represented by svgCommandsList.
 
-        The method is to build the (averaged) tangeant vectors to the curve.
-        Aligned points will have tangeant with similar angle, so we cluster consecutive angles together
+        The method is to build the (averaged) tangent vectors to the curve.
+        Aligned points will have tangent with similar angle, so we cluster consecutive angles together
         to define segments.
         Then we extend segments to connected points not already part of other segments.
         Then we merge consecutive segments with similar angles.
         
         """
         sourcepoints, svgCommandsList = toArray(svgCommandsList)
-        tangeants = buildTangeants(sourcepoints)
+        tangents = buildTangents(sourcepoints)
 
         # Check if circle -----------------------
-        isCircle, res = self.checkForCircle( sourcepoints, tangeants)        
+        isCircle, res = self.checkForCircle( sourcepoints, tangents)        
         if isCircle:
             x,y,rmin, rmax,angle = res
             if rmin/rmax>0.8:
@@ -1284,8 +1284,8 @@ class ShapeReco(inkex.Effect):
         debug('forceClose ', forceClose)
 
 
-        # cluster points by angle of their tangeants -------------
-        tgSegs = [ Segment.fromCenterAndDir( p, t ) for (p,t) in zip(sourcepoints,tangeants) ]
+        # cluster points by angle of their tangents -------------
+        tgSegs = [ Segment.fromCenterAndDir( p, t ) for (p,t) in zip(sourcepoints,tangents) ]
         clustersInd = clusterAngles( [s.angle for s in tgSegs] )
         clustersInd.sort( )
         debug("build envelop cluster:  ", clustersInd)
@@ -1561,8 +1561,8 @@ class ShapeReco(inkex.Effect):
             parsedList = simplepath.parsePath(n.get('d'))
                       
             #g = self.simplifyPath( parsedList, n) 
-            #g= self.tangeantEnvelop( parsedList, n )
-            g= self.segsFromTangeants( parsedList, n )
+            #g= self.tangentEnvelop( parsedList, n )
+            g= self.segsFromTangents( parsedList, n )
             debug(" build group ", g, g.refNode, n)
             analyzedNodes.append( g )
 
