@@ -60,6 +60,8 @@ tan = shapereco.buildTangents( p )
 from numpy import array
 e.parse('tests/failureL.svg')
 
+
+
 def readTangents( nid , aSize=0.1, doPrint=False):
     el = e.getElementById(nid)
     if el is None:
@@ -89,7 +91,7 @@ def testMany(aSize=0.1):
 
     rect=[ "path4725" ,"path5186" ,"path4494" ,"path6787", "path16095"]
     
-    cir=["path4511", "path4637" ,"path6181"    ,"path5062"    ,"path7415" ,"path9773" ]
+    cir=["path4511", "path4637" ,"path6181"    ,"path5062"    ,"path7415" ,"path9773" , "path9066"]
     noconv = [   "path9362",  "path4661"] 
 
     lrec = [ readTangents(o,aSize) for o in rect ]
@@ -106,5 +108,31 @@ def plotTangents( nid ):
     plt.plot(deltasD, angles)
     plt.plot(deltasD, fits)
     plt.plot(deltasD, dist_to_fit)
+    plt.grid()
+    plt.show()
+
+
+def plotSegs(shape, *indices):
+    from  matplotlib import pyplot as plt
+    print indices
+    if indices==(): indices=range(len(shape.listOfPaths))
+    lines=[]
+    for i in indices:
+        s = shape.listOfPaths[i]
+        print [s.point1[0], s.pointN[0] ], [s.point1[1], s.pointN[1]  ]
+        lines +=[ plt.plot( [s.point1[0], s.pointN[0] ], [s.point1[1], s.pointN[1] ] ) ]
+    plt.grid()
+    plt.show()
+
+def plotSegPointVsLineEq(s):
+    from  matplotlib import pyplot as plt
+    y = numpy.array([s.point1[1], s.pointN[1] ])
+    x = numpy.array([s.point1[0], s.pointN[0] ])
+    plt.plot( x,  y )
+    if s.b != 0:
+        plt.plot(x, (-x*s.a-s.c)/s.b )
+    else:
+        print ' !!!! b=0'
+        plt.plot(x, [0,0] )
     plt.grid()
     plt.show()

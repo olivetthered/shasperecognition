@@ -113,6 +113,9 @@ def D2(p1, p2):
 def D(p1, p2):
     return sqrt(D2(p1,p2) )
 
+def norm(p):
+    return sqrt( (p**2).sum() )
+
 def computeBox(a):
     """returns the bounding box enclosing the array of points a
     in the form (x,y, width, height) """
@@ -151,6 +154,8 @@ class Path(object):
     prev = None # previous Path in the sequence of path corresponding to a SVG node
     startIndexSource = 0 # position of first point in the full original array of point
     sourcepoints = None  # the full list of points from which this path is a subset
+
+    normalv = None
     
     def __init__(self, points):
         """points an array of points """
@@ -274,6 +279,7 @@ class Segment(Path):
         if doinit :
             self.init()
 
+
     def init(self):
         a,b,c = self.a, self.b, self.c
         x,y = self.points[0]
@@ -319,14 +325,16 @@ class Segment(Path):
             # rotate to avoid numerical issues
             nu = numpy.array(rotMat.dot(nu))[0]
             nv = numpy.array(rotMat.dot(nv))[0]
-        debug('  intersection ' ,nu, nv, self.angle, seg.angle)
         m = numpy.matrix( (nu, nv) )        
 
-        i =  (m**-1*u) 
-        if doRotation:
-            i = unrotMat*i
-            
+        i =  (m**-1).dot(u) 
         i=numpy.array( i).swapaxes(0,1)[0]
+        debug('  intersection ' ,nu, nv, self.angle, seg.angle, ' --> ',i)
+        if doRotation:
+            i = unrotMat.dot(i).A1
+        debug('   ' ,i)
+        
+        
         return i
 
     def setIntersectWithNext(self, next=None):
@@ -334,7 +342,7 @@ class Segment(Path):
         if next is None:
             next = self.next
         if next and next.isSegment():
-            if self.normalv.dot(next.unitv) < 1e-3:
+            if abs(self.normalv.dot(next.unitv)) < 1e-3:
                 return
             debug(' Intersect',self, next,  ' from ', self.point1, self.pointN, ' to ' ,next.point1, next.pointN,)
             inter = self.intersect(next)
@@ -444,13 +452,16 @@ class Segment(Path):
 
     def translate(self, tr):
         """Translate this segment by tr """
-        self.c = -self.c -self.a*tr[0] -self.b*tr[1]
+        c = self.c -self.a*tr[0] -self.b*tr[1]
+        self.c =c
         self.pointN = self.pointN+tr
         self.point1 = self.point1+tr
         
     def adjustToNewAngle(self):        
         """reset all parameters so that self.angle is change to self.newAngle """
+
         self.a,self.b,self.c = parametersFromPointAngle( 0.5*(self.point1+self.pointN), self.newAngle)
+
         self.angle = self.newAngle
         self.normalv = numpy.array( [ self.a, self.b ])
         self.unitv = numpy.array( [ self.b, -self.a ])
@@ -524,7 +535,7 @@ class Circle(PathGroup):
 
     If an other radius 'rmax' is given than the object represents an ellipse.
     """
-
+    isClosing= True
     def __init__(self, center, rad,  refNode=None, rmax=None, angle=0.):
         self.listOfPaths = []
         self.refNode = refNode
@@ -1095,8 +1106,10 @@ class ShapeReco(inkex.Effect):
         else:
             p = paths[0]
 
-        self.extractShapes(paths)
-        
+        shapes = self.extractShapes(paths)
+        # add new shapes in SVG document
+        self.addShapesToDoc( shapes )
+
         #inkex.errormsg('  options '+str(self.options.keepOrigin))
 
     def removeSmallEdge(self, paths, wTot,hTot):
@@ -1382,6 +1395,8 @@ class ShapeReco(inkex.Effect):
         We also use a 2nd criteria : the number of groups of angles we can build from all
         tangent angles in the path. The ratio num_group/num_points is much lower for paths
         containing straight lines.
+
+        Still failing to recognize elongated ellipses...
         
         """
         if len(points)<6:
@@ -1538,6 +1553,7 @@ class ShapeReco(inkex.Effect):
         debug(newSegs)
         # -----------------------
 
+
         # -----------------------
         # Merge consecutive Path objects 
         updatedSegs=[]
@@ -1572,6 +1588,7 @@ class ShapeReco(inkex.Effect):
 
         newSegs = SegmentExtender.extendSegments( newSegs )
         debug("extended segs", newSegs)
+
         # ----------------------------------------
 
         ## # convert 1 point Path into 2 Segments to its prev and next
@@ -1687,6 +1704,19 @@ class ShapeReco(inkex.Effect):
 
 
 
+    def extractShapesFromID( self, nid ):
+        """for debugging purpose """
+        el = self.getElementById(nid)
+        if el is None:
+            print "Cant find ", nid
+            return
+        nodes=self.extractShapes([el])
+        class tmp:
+            pass
+        self.options = tmp()
+        self.options.keepOrigin=False
+        self.shape = nodes[0]
+        
     def extractShapes( self, nodes ):
         """The main function.
         nodes : a list of nodes"""
@@ -1720,15 +1750,18 @@ class ShapeReco(inkex.Effect):
             for group in analyzedNodes:
                 adjustAllDistances(group.listOfPaths)
 
-            ## for g in analyzedNodes: 
-            ##     if g.isClosing:
-            ##         debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
-            ##         g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  doesn't work ?? BUG...
+            for g in analyzedNodes: 
+                if g.isClosing and not isinstance(g,Circle):
+                    debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
+                    g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  
             circles=[ group for group in analyzedNodes if isinstance(group, Circle)]
             self.prepareRadiusEqualization(circles, allShapeDist)
             self.alignCircSegments(circles, allSegs)
 
-        # add new shapes in SVG document
+        return analyzedNodes
+
+        
+    def addShapesToDoc(self, analyzedNodes):
         for group in analyzedNodes:            
             debug("final ", group.listOfPaths, group.refNode )
             # change to Rectangle if possible :
