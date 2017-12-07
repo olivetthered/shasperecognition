@@ -139,9 +139,7 @@ def debug_on(*l):
     #inkex.errormsg(' '.join(str(i) for i in l) ) 
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
-
-
-#set_debug_on()
+debug = debug_on
 
 # *************************************************************
 # Internal Objects
@@ -440,18 +438,18 @@ class Segment(Path):
     def barycenter_origin(self):
         return self.points.sum(axis=0)/len(self.points)
 
-    def box_origin(self):
+    def box(self):
         return computeBox(self.points)
 
 
     def translate(self, tr):
         """Translate this segment by tr """
-        self.c = -self.c -self.a*tr[0] -self.b*tr[0]
+        self.c = -self.c -self.a*tr[0] -self.b*tr[1]
         self.pointN = self.pointN+tr
         self.point1 = self.point1+tr
         
     def adjustToNewAngle(self):        
-        """reset all parameters so that angle is change to self.newAngle """
+        """reset all parameters so that self.angle is change to self.newAngle """
         self.a,self.b,self.c = parametersFromPointAngle( 0.5*(self.point1+self.pointN), self.newAngle)
         self.angle = self.newAngle
         self.normalv = numpy.array( [ self.a, self.b ])
@@ -472,15 +470,14 @@ class Segment(Path):
         else:
             self.setIntersectWithNext()
 
-
     def adjustToNewDistance(self):
         self.pointN = self.newLength* self.unitv + self.point1
         self.length = self.newLength
-        #pass
 
     def tempLength(self):
         if self.newLength : return self.newLength
         else : return self.length
+
     def tempAngle(self):
         if self.newAngle: return self.newAngle
         return self.angle
@@ -499,10 +496,11 @@ class PathGroup(object):
      - a reference to the inkscape node object
      
     """
-    def __init__(self, listOfPaths, refSVGPathList, refNode=None):
+    def __init__(self, listOfPaths, refSVGPathList, refNode=None, isClosing=False):
         self.refNode = refNode
         self.listOfPaths = listOfPaths
         self.refSVGPathList = refSVGPathList
+        self.isClosing=isClosing
         
     def addToNode(self, node):
         newList = reformatList( self.refSVGPathList, self.listOfPaths)        
@@ -948,10 +946,6 @@ def parametersFromPointAngle(point, angle):
     a, b = normal
     return a, b , genOffset
     
-def segmentFromPointsAngle(points, angle):
-    barycenter = points.sum(axis=0)/len(points)
-    a, b , offset = parametersFromPointAngle(barycenter, angle)
-    return Segment(a,b,offset,points)
 
 
 def addPath(newList, refnode):
@@ -1376,57 +1370,77 @@ class ShapeReco(inkex.Effect):
     def checkForCircle(self, points, tangents):
         """Determine if the points and their tangents represent a circle
 
+        The difficulty is to be able to recognize ellipse while avoiding false positive
+        due to badly drawn rectangle or non-convex closed curves.
+        
         Method : we consider angle of tangent as function of lenght on path.
         For circles these are : angle = c1 x lenght + c0.
         We thus fit a line in the (angle, lenght) plane.
-        If the path is made of line, angle will be constants for large section,
+        If the path is made of segments, then angle will be constants on large windows,
         thus the distance to fitted line will be bad for a large num of points.
-        we use the quantiles above 80% to classify.
+        we use the quantiles above 85% as a quantifier.
+        We also use a 2nd criteria : the number of groups of angles we can build from all
+        tangent angles in the path. The ratio num_group/num_points is much lower for paths
+        containing straight lines.
         
         """
         if len(points)<6:
             return False, 0
         xmin,ymin, w, h = computeBox( points)
         diag2=(w*w+h*h)
-        ## d2 = D2(points[0], points[-1] )
-        ## if d2 > diag2*(0.1*0.1):
-        ##     debug(' Circle : Not closing !')
-        ##     return False,0
         
         diag = sqrt(diag2)*0.5
         norms = numpy.sqrt(numpy.sum( tangents**2, 1 ))
-        #print  'norms ', norms
+
         #debug( 'tangents ', tangents)
         angles = numpy.arccos( tangents[:,0] /norms ) *numpy.sign( tangents[:,1] )
-        debug( 'angle = ', repr(angles))
+        #debug( 'angle = ', repr(angles))
         N = len(angles)
-        angles = smoothArray(angles, n=max(N/20,2) )
+        # shift everything before smoothing
+        angles += _twopi
+        angles = smoothArray(angles, n=max(int(N*0.03),2) )
+        angles -= _twopi # shift back
+        
         deltas =  points[1:] - points[:-1] 
         deltasD = numpy.concatenate([ [0.], numpy.sqrt(numpy.sum( deltas**2, 1 )) / diag] )
 
 
+
+        # locate and avoid the point when swicthing
+        # from -pi to +pi. The point is around the minimum
         imin = numpy.argmin(angles)
-        imax = numpy.argmax(angles)
-        if imin<imax:
-            angles[:imin+1] +=numpy.pi*2
-        else:
-            angles[imin:] +=numpy.pi*2
         debug(' imin ',imin)
         angles = numpy.roll(angles, -imin)
         deltasD = numpy.roll(deltasD, -imin)
+        n=int(N*0.15)
+        # avoid by removing points around the min
+        angles=angles[n:-n]
+        deltasD=deltasD[n:-n]
         deltasD = deltasD.cumsum()
-        
+        N = len(angles)
+
+        # fit a line 
         angles_vs_d = numpy.stack([ deltasD, angles] ,1)
         seg =regLin( angles_vs_d )
-        dist_to_fit = numpy.abs( angles + (seg.a*angles_vs_d[:,0]+seg.c)/seg.b )
+        #dist_to_fit = numpy.abs( angles + (seg.a*angles_vs_d[:,0]+seg.c)/seg.b )
+        dist_to_fit = seg.computeDistancesToLine(angles_vs_d)
+        #dist_to_fit_o = dist_to_fit.copy()
         dist_to_fit.sort()
-        debug('fit q',seg.quality() , '  d90=', dist_to_fit[int(N*0.9)], ' d80=',dist_to_fit[int(N*0.8)])
-        ## debug( 'angle = ', repr(angles))
-        ## debug( 'deltasD=', repr(deltasD))
-        ## debug( 'dist_to_fit = ', repr(dist_to_fit))        
+        debug('fit q',seg.quality() , '  d50=', dist_to_fit[int(N*0.5)], ' d85=',dist_to_fit[int(N*0.85)], ' meanD=',dist_to_fit.mean())
 
-        if dist_to_fit[int(N*0.8)] > 1.3: #empirical
+        self.temp = (deltasD,angles, -(seg.a*angles_vs_d[:,0]+seg.c)/seg.b , dist_to_fit)
+
+        if dist_to_fit[int(N*0.85)] > 0.5: #empirical
             return False,0
+        if dist_to_fit[int(N*0.85)] > 0.3: #empirical
+            # other test : num cluster of angles
+            clList= clusterValues(angles)
+            #clList.sort(key=lambda cl:len(cl))    
+            nclF = len(clList)/float(N)
+            if nclF<0.2:
+                return False, 0
+
+        # It's a circle !
         radius = points - numpy.array([xmin+w*0.5,ymin+h*0.5])
         radius_n = numpy.sqrt(numpy.sum( radius**2, 1 )) # normalize
 
@@ -1446,8 +1460,7 @@ class ShapeReco(inkex.Effect):
             radius_n[(mini-i)%n]=0
         radius_n_2 = [ r for r in radius_n if r>0]
         rmax_2 = max(radius_n_2)
-        rmin_2 = min(radius_n_2)
-        debug(' xxxxxxxxx ',rmin, rmin_2, ' |||| ',rmax, rmax_2, n/8+1)
+        rmin_2 = min(radius_n_2) # not good !!
         anglemax = numpy.arccos( radius[maxi][0]/rmax)*numpy.sign(radius[maxi][1])
         return True, (xmin+w*0.5,ymin+h*0.5, 0.5*(rmin+rmin_2), 0.5*(rmax+rmax_2), anglemax)
 
@@ -1645,11 +1658,8 @@ class ShapeReco(inkex.Effect):
             if p.isSegment() and p.next:
                 p.setIntersectWithNext()
         # -----------------------------------------------------
-
-        ## if forceClose:            
-        ##     newSegs[-1].setIntersectWithNext(newSegs[0])
         
-        return PathGroup(newSegs, svgCommandsList, refNode)
+        return PathGroup(newSegs, svgCommandsList, refNode, isClosing)
 
 
     def simplifyPath(self, parsedpath, refNode):
@@ -1708,7 +1718,12 @@ class ShapeReco(inkex.Effect):
             ## # then 2nd global pass, with tighter criteria
             allShapeDist=self.prepareDistanceEqualization(allSegs, 0.05)
             for group in analyzedNodes:
-                adjustAllDistances(group.listOfPaths)            
+                adjustAllDistances(group.listOfPaths)
+
+            ## for g in analyzedNodes: 
+            ##     if g.isClosing:
+            ##         debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
+            ##         g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  doesn't work ?? BUG...
             circles=[ group for group in analyzedNodes if isinstance(group, Circle)]
             self.prepareRadiusEqualization(circles, allShapeDist)
             self.alignCircSegments(circles, allSegs)
