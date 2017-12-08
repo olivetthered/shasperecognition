@@ -176,7 +176,6 @@ class Path(object):
         return False
     def quality(self):
         return 1000
-
         
 
     def dump(self):
@@ -185,7 +184,9 @@ class Path(object):
             return 'path at '+str(self.points[0])+ ' to '+ str(self.points[-1])+'    npoints=%d / %d (eff)'%(n,self.effectiveNPoints)
         else:
             return 'path Void !'
-        
+
+    def setNewLength(self, l):
+        self.newLength = l
 
     def removeLastPoints(self,n):
         self.points = self.points[:-n]
@@ -200,7 +201,6 @@ class Path(object):
 
     def translate(self, tr):
         """Translate this path by tr"""
-        #self.c = -self.c -self.a*tr[0] -self.b*tr[0]
         self.points = self.points + tr
 
     def formatedSegment(self, firstP=False):
@@ -414,7 +414,6 @@ class Segment(Path):
         """ Returns the combination of self and self.next.
         sourcepoints has to be set
         """
-        #spoints = self.sourcepoints[self.startIndexSource:self.startIndexSource+len(self.points)+len(self.next.points)]
         spoints = numpy.concatenate([self.points,self.next.points])
         newSeg = fitSingleSegment(spoints)
         
@@ -443,6 +442,7 @@ class Segment(Path):
         self.c =c
         self.pointN = self.pointN+tr
         self.point1 = self.point1+tr
+        self.points +=tr
         
     def adjustToNewAngle(self):        
         """reset all parameters so that self.angle is change to self.newAngle """
@@ -494,6 +494,10 @@ class PathGroup(object):
      - a reference to the inkscape node object
      
     """
+    listOfPaths = []
+    refSVGPathList = []
+    isClosing = False
+    
     def __init__(self, listOfPaths, refSVGPathList, refNode=None, isClosing=False):
         self.refNode = refNode
         self.listOfPaths = listOfPaths
@@ -565,7 +569,7 @@ class Rectangle(PathGroup):
         self.bbox = size
         self.angle = angle
         pos = self.center - numpy.array( size )/2
-        if angle != 0 :
+        if angle != 0. :
             cosa = numpy.cos(angle)
             sina = numpy.sin(angle)            
             self.rotMat = numpy.matrix( [ [ cosa, sina], [-sina, cosa] ] )
@@ -649,6 +653,12 @@ def resetPrevNextSegment(segs):
         seg.next = s
         s.prev = seg           
     return segs
+
+def resetStartIndexes(segs):
+    acc = segs[0].startIndexSource + len(segs[0].points)
+    for s in segs[1:]:
+        s.startIndexSource = acc
+        acc += len(s.points)
 
 def fitSingleSegment(a):
     xmin,ymin,w,h = computeBox(a)
@@ -1329,7 +1339,7 @@ class ShapeReco(inkex.Effect):
             dmean = sum( lengths[i] for i in cl ) / len(cl)
             allDist.append(dmean)
             for i in cl:
-                segs[i].newLength = dmean
+                segs[i].setNewLength(dmean)
                 debug( i,' set newLength ',dmean, segs[i].length, segs[i].dumpShort())
                 
         return allDist
@@ -1591,6 +1601,7 @@ class ShapeReco(inkex.Effect):
         # Extend segments -----------------------------------
 
         newSegs = SegmentExtender.extendSegments( newSegs )
+        resetStartIndexes(newSegs)
         debug("extended segs", newSegs)
 
         # ----------------------------------------
@@ -1719,7 +1730,39 @@ class ShapeReco(inkex.Effect):
         self.options = tmp()
         self.options.keepOrigin=False
         self.shape = nodes[0]
-        
+
+
+    def buildShape(self, node):
+        def rotationAngle(tr):
+            if tr and tr.startswith('rotate'):
+                # retrieve the angle :
+                return float(tr[7:-1].split(','))
+            else:
+                return 0.
+            
+        if node.tag.endswith('path'):
+            parsedSVGCommands = node.get('d')
+            g = self.segsFromTangents(simplepath.parsePath(parsedSVGCommands), node)
+        elif node.tag.endswith('rect'):
+            tr = node.get('transform',None)
+            if tr and tr.startswith('matrix'):
+                return None # can't deal with scaling
+            recSize = numpy.array([node.get('width'),node.get('height')])
+            recCenter = numpy.array([node.get('x'),node.get('y')]) + recSize/2
+            angle=rotationAngle(tr)
+            g = Rectangle( recSize, recCenter, 0 , [], node)
+        elif node.tag.endswith('circle'):
+            g = Circle(node.get('cx'),node.get('cy'), node.get('r'), [], node )
+        elif node.tag.endswith('ellipse'):
+            if tr and tr.startswith('matrix'):
+                return None # can't deal with scaling
+            angle=rotationAngle(tr)
+            rx = node.get('rx')
+            ry = node.get('ry')
+            g = Circle(node.get('cx'),node.get('cy'), ry, rmax=rx , angle=angle, refNode=node )
+
+        return g
+    
     def extractShapes( self, nodes ):
         """The main function.
         nodes : a list of nodes"""
@@ -1727,45 +1770,45 @@ class ShapeReco(inkex.Effect):
 
         # convert nodes to list of segments (PathGroup) or Circle
         for n in nodes :
-            parsedList = simplepath.parsePath(n.get('d'))
-                      
-            #g = self.simplifyPath( parsedList, n) 
-            #g= self.tangentEnvelop( parsedList, n )
-            g= self.segsFromTangents( parsedList, n )
-            debug(" build group ", g, g.refNode, n)
-            analyzedNodes.append( g )
+            g = self.buildShape(n)
+            if g :
+                analyzedNodes.append( g )
 
         # uniformize shapes
-        if 1:
-            allSegs = [ p  for g in analyzedNodes for p in g.listOfPaths if p.isSegment() ]
-
-            self.prepareParrallelize(allSegs)
-            self.adjustToKnownAngle(allSegs)
-
-            for group in analyzedNodes:
-                # first pass : independently per path
-                adjustAllAngles(group.listOfPaths)
-                group.listOfPaths[:] = mergeConsecutiveParralels(group.listOfPaths)
-                self.prepareDistanceEqualization([p for p in group.listOfPaths if p.isSegment()], 0.12)
-                adjustAllDistances(group.listOfPaths)            
-            ## # then 2nd global pass, with tighter criteria
-            allShapeDist=self.prepareDistanceEqualization(allSegs, 0.05)
-            for group in analyzedNodes:
-                adjustAllDistances(group.listOfPaths)
-
-            for g in analyzedNodes: 
-                if g.isClosing and not isinstance(g,Circle):
-                    debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
-                    g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  
-            circles=[ group for group in analyzedNodes if isinstance(group, Circle)]
-            self.prepareRadiusEqualization(circles, allShapeDist)
-            self.alignCircSegments(circles, allSegs)
+        self.uniformizeShapes(analyzedNodes)
 
         return analyzedNodes
 
+
+    def uniformizeShapes(self, pathGroupList):
+        allSegs = [ p  for g in pathGroupList for p in g.listOfPaths if p.isSegment() ]
+
+        self.prepareParrallelize(allSegs)
+        self.adjustToKnownAngle(allSegs)
+
+        for group in pathGroupList:
+            # first pass : independently per path
+            adjustAllAngles(group.listOfPaths)
+            group.listOfPaths[:] = mergeConsecutiveParralels(group.listOfPaths)
+            self.prepareDistanceEqualization([p for p in group.listOfPaths if p.isSegment()], 0.12)
+            adjustAllDistances(group.listOfPaths)            
+        ## # then 2nd global pass, with tighter criteria
+        allShapeDist=self.prepareDistanceEqualization(allSegs, 0.05)
+        for group in pathGroupList:
+            adjustAllDistances(group.listOfPaths)
+
+        for g in pathGroupList: 
+            if g.isClosing and not isinstance(g,Circle):
+                debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
+                g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  
+        circles=[ group for group in pathGroupList if isinstance(group, Circle)]
+        self.prepareRadiusEqualization(circles, allShapeDist)
+        self.alignCircSegments(circles, allSegs)
+
         
-    def addShapesToDoc(self, analyzedNodes):
-        for group in analyzedNodes:            
+        
+    def addShapesToDoc(self, pathGroupList):
+        for group in pathGroupList:            
             debug("final ", group.listOfPaths, group.refNode )
             # change to Rectangle if possible :
             finalshape = toRemarkableShape( group )

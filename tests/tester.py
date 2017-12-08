@@ -59,6 +59,7 @@ tan = shapereco.buildTangents( p )
 
 from numpy import array
 e.parse('tests/failureL.svg')
+#e.parse('doc/demo.svg')
 
 
 
