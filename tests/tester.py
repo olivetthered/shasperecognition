@@ -84,14 +84,14 @@ def readTangents( nid , aSize=0.1, doPrint=False):
         print 'cl Test =',(len(clList[-1])+len(clList[-2]))/float(len(angles))
         print 'dist to fit=', dist_to_fit[int(len(angles)*0.85)]
     #return dist_to_fit[int(len(angles)*0.9)], (len(clList[-1])+len(clList[-2]))/float(len(angles)) , len(clList)/float(len(angles))
-    return dist_to_fit[int(len(angles)*0.9)], dist_to_fit.mean(), len(clList)/float(len(angles))
+    return dist_to_fit[int(len(angles)*0.6)], dist_to_fit.mean(), len(clList)/float(len(angles))
     
 def testMany(aSize=0.1):
 
 
     rect=[ "path4725" ,"path5186" ,"path4494" ,"path6787", "path16095"]
     
-    cir=["path4511", "path4637" ,"path6181"    ,"path5062"    ,"path7415" ,"path9773" , "path9066"]
+    cir=["path4511", "path4637" ,"path6181"    ,"path5062"    ,"path7415" ,"path9773" , "path9066", "path5531"]
     noconv = [   "path9362",  "path4661"] 
 
     lrec = [ readTangents(o,aSize) for o in rect ]

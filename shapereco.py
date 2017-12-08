@@ -427,19 +427,6 @@ class Segment(Path):
         return newSeg
 
     
-    def refit(self):
-        xmin,ymin,w,h = computeBox(self.points)
-        inverse = w<h
-        if inverse:
-            self.points = numpy.roll(self.points,1,axis=1) 
-
-        s , o = regLin(self.points, returnOnlyPars=True)
-        self.a=s
-        self.b=-1
-        self.c = o
-        self.init()
-        if inverse:
-            self.inverse()
 
     def barycenter(self):
         return 0.5*(self.point1+self.pointN)
@@ -649,7 +636,7 @@ class Rectangle(PathGroup):
 # Object manipulation functions
 
 def toRemarkableShape( group ):
-    """Test if PathGroup instance group looks like a remarkable shape (ex: Rectangle).
+    """Test if PathGroup instance 'group' looks like a remarkable shape (ex: Rectangle).
     if so returns a new shape instance else returns group unchanged"""
     r = Rectangle.isRectangle( group )
     if r : return r
@@ -707,6 +694,8 @@ def smoothArray(a, n=2):
     return smootha/count
 
 def buildTangents( points , averaged=True):
+    """build tangent vectors to the curve 'points'.
+    if averaged==True, the tangents are averaged with their direct neighbours (use case : smoother tangents)"""
     tangents = numpy.zeros( (len(points),2) )
     i=1
     tangents[:-i] += points[i:] - points[:-i] 
@@ -732,7 +721,8 @@ def buildTangents( points , averaged=True):
 
 
 def clusterAngles(array, dAng=0.15):
-    """ array : flat array of angles
+    """Cluster together consecutive angles with similar values (within 'dAng').
+    array : flat array of angles
     returns [ ...,  (indi_0, indi_1),...] where each tuple are indices of cluster i
     """
     N = len(array)
@@ -841,9 +831,9 @@ def mergeConsecutiveParralels(segments):
 ##**************************************
 ## 
 class SegmentExtender:
-    """Extend Segments from a list of Path by aggregating points in neighbours Path objects.
+    """Extend Segments from a list of Path by aggregating points in neighbouring Path objects.
 
-    There are 2 concrete subclass for extending forward and backward (due to technical reasons).
+    There are 2 concrete subclasses for extending forward and backward (due to technical reasons).
     """
     def nextPaths(self,seg):
         pL = []
@@ -948,7 +938,6 @@ class BwdExtender(SegmentExtender):
 
 
 
-
 def parametersFromPointAngle(point, angle):
     unitv = numpy.array([ numpy.cos(angle), numpy.sin(angle) ])
     ortangle = angle+numpy.pi/2
@@ -993,7 +982,10 @@ def reformatList( refSVGPathList, paths):
     return newList
 
 
-def clusterValues( values, relS=0.1  ):
+def clusterValues( values, relS=0.1 , refScaleAbs=True  ):
+    """form clusters of similar quantities from input 'values'.
+    Clustered values are not necessarily contiguous in the input array. 
+    Clusters size (that is max-min) is < relS*cluster_average """
     if len(values)==0:
         return []
     if len(values.shape)==1:
@@ -1004,7 +996,7 @@ def clusterValues( values, relS=0.1  ):
     sortedV = sortedV[ numpy.argsort(sortedV[:,0]) ]
 
     sortedVV = sortedV[:,0]
-    totDelta = sortedVV[-1]-sortedVV[0]
+    refScale = sortedVV[-1]-sortedVV[0]
     #sortedVV += 2*min(sortedVV)) # shift to avoid numerical issues around 0
 
     #print sortedVV
@@ -1015,7 +1007,7 @@ def clusterValues( values, relS=0.1  ):
             self.N=len(indices)
             self.indices = indices
         def size(self):
-            return self.delta/totDelta
+            return self.delta/refScale
         
         def combine(self, c):
             #print ' combine ', self.indices[0], c.indices[-1], ' -> ', sortedVV[c.indices[-1]] - sortedVV[self.indices[0]]
@@ -1026,6 +1018,16 @@ def clusterValues( values, relS=0.1  ):
 
         def originIndices(self):
             return tuple(int(sortedV[i][1]) for i in self.indices)
+
+    def size_fromcl(self):
+        return self.delta / sum( sortedVV[i] for i in self.indices) *len(self.indices)
+    def size_abs(self):
+        return self.delta/refScale
+
+    if refScaleAbs:
+        Cluster.size = size_abs
+    else:
+        Cluster.size = size_fromcl
         
     class ClusterPair:
         next=None
@@ -1051,11 +1053,12 @@ def clusterValues( values, relS=0.1  ):
     cpList = [ ClusterPair( c, cList[i+1] ) for (i,c) in enumerate(cList[:-1]) ]
     resetPrevNextSegment( cpList )
 
+    #print cpList
     def reduceCL( cList ):
         if len(cList)<=1:
             return cList
         cp = min(cList, key=lambda cp:cp.size)
-        #print '==', cp.size , cp.c1.indices , cp.c2.indices
+        #print '==', cp.size , relS, cp.c1.indices , cp.c2.indices, cp.potentialC.indices
         if cp.size > relS:
             return cList
         if cp.next:
@@ -1065,10 +1068,14 @@ def clusterValues( values, relS=0.1  ):
             cp.prev.setC2(cp.potentialC)
             cp.prev.next = cp.next
         cList.remove(cp)
+        #print ' -----> ', [ (cp.c1.indices , cp.c2.indices) for cp in cList]
         return reduceCL(cList)
 
     cpList = reduceCL(cpList)
-
+    if len(cpList)==1:
+        cp = cpList[0]
+        if cp.potentialC.size()<relS:
+            return [ cp.potentialC.originIndices() ]
     #print cpList
     if cpList==[]:
         return []
@@ -1331,26 +1338,26 @@ class ShapeReco(inkex.Effect):
                 
         return allDist
 
-    def prepareRadiusEqualization(self, circles, otherDists, relSize=0.1):
+    def prepareRadiusEqualization(self, circles, otherDists, relSize=0.2):
         ncircles = len(circles)
-        lengths = numpy.array( [c.radius for c in circles]+[2*c.radius for c in circles ]+otherDists )
-        indices = numpy.array( range(ncircles*2) +[-1]*len(otherDists) )
-        clusters = clusterValues(numpy.stack([ lengths, indices ],1 ) )
+        lengths = numpy.array( [c.radius for c in circles]+otherDists )
+        indices = numpy.array( range(ncircles) +[-1]*len(otherDists) )
+        clusters = clusterValues(numpy.stack([ lengths, indices ],1 ), relSize, refScaleAbs=False )
 
-        debug('prepareRadiusEqualization radisus ', [ (c.radius, c.rmax) for c in circles])
+        debug('prepareRadiusEqualization radius ', repr(lengths))
         debug('prepareRadiusEqualization clusters ',  clusters)
         allDist = []
         for cl in clusters:
             dmean = sum( lengths[i] for i in cl ) / len(cl)
             allDist.append(dmean)
+            if len(cl)==1:
+                continue
             for i in cl:
                 if i==-1:
                     continue
                 elif i< ncircles:
                     circles[i].radius = dmean
-                else:
-                    circles[i-ncircles].radius = dmean*0.5
-            
+        debug(' post radius ',[c.radius for c in circles] )
         return allDist
 
     def alignCircSegments(self, circles, segments, relSize=0.15):
@@ -1383,8 +1390,8 @@ class ShapeReco(inkex.Effect):
     def checkForCircle(self, points, tangents):
         """Determine if the points and their tangents represent a circle
 
-        The difficulty is to be able to recognize ellipse while avoiding false positive
-        due to badly drawn rectangle or non-convex closed curves.
+        The difficulty is to be able to recognize ellipse while avoiding paths small fluctuations a
+        nd false positive due to badly drawn rectangle or non-convex closed curves.
         
         Method : we consider angle of tangent as function of lenght on path.
         For circles these are : angle = c1 x lenght + c0.
@@ -1444,10 +1451,11 @@ class ShapeReco(inkex.Effect):
         debug('fit q',seg.quality() , '  d50=', dist_to_fit[int(N*0.5)], ' d85=',dist_to_fit[int(N*0.85)], ' meanD=',dist_to_fit.mean())
 
         self.temp = (deltasD,angles, -(seg.a*angles_vs_d[:,0]+seg.c)/seg.b , dist_to_fit)
+        dTest = dist_to_fit[int(N*0.6)]
 
-        if dist_to_fit[int(N*0.85)] > 0.5: #empirical
+        if dTest > 0.4: #empirical
             return False,0
-        if dist_to_fit[int(N*0.85)] > 0.3: #empirical
+        if dTest > 0.2: #empirical
             # other test : num cluster of angles
             clList= clusterValues(angles)
             #clList.sort(key=lambda cl:len(cl))    
@@ -1657,9 +1665,8 @@ class ShapeReco(inkex.Effect):
         debug(' __ 2nd angle merge')
         newSegs = mergeList( newSegs, mangle=0.35 ) # 2nd pass
         newSegs=resetPrevNextSegment(newSegs)
-        ## for seg in newSegs:
-        ##     debug( seg , seg.point1, seg.pointN, seg.angle)
         debug('after merge ', len(newSegs), newSegs)
+
 
         # -----------------------------------------------------
         # remove negligible Path/Segments between 2 large Segments
