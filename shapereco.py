@@ -142,7 +142,7 @@ def debug_on(*l):
     #inkex.errormsg(' '.join(str(i) for i in l) ) 
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
-debug = debug_on
+#debug = debug_on
 
 # *************************************************************
 # Internal Objects
@@ -1088,7 +1088,6 @@ def clusterValues( values, relS=0.1 , refScaleAbs=True  ):
 # *************************************************************
 # The inkscape extension
 # *************************************************************
-
 class ShapeReco(inkex.Effect):
     def __init__(self):
         inkex.Effect.__init__(self)
@@ -1098,7 +1097,6 @@ class ShapeReco(inkex.Effect):
                         dest="keepOrigin", default=False,
                         help="Do not replace path")
         self.defPathName = [] # debugging only
-
 
 
     def effect(self):
@@ -1117,7 +1115,6 @@ class ShapeReco(inkex.Effect):
         # add new shapes in SVG document
         self.addShapesToDoc( shapes )
 
-        #inkex.errormsg('  options '+str(self.options.keepOrigin))
 
     def removeSmallEdge(self, paths, wTot,hTot):
         """Remove small Path objects which stand between 2 Segments (or at the ends of the sequence).
@@ -1204,7 +1201,6 @@ class ShapeReco(inkex.Effect):
             i = next +1
         presegs[ -1 ] = ( presegs[-1][0],presegs[-1][1]+1 ) #append the last point
 
-        #print 'presegs ', presegs
         #  convert to Segment:
         minNpointInSeg = min(4,max(Np/20,2))
         segs = []
@@ -1339,6 +1335,8 @@ class ShapeReco(inkex.Effect):
         return allDist
 
     def prepareRadiusEqualization(self, circles, otherDists, relSize=0.2):
+        """group circles radius and distances into cluster.
+        Then set circles radius according to the mean of the clusters they belong to."""
         ncircles = len(circles)
         lengths = numpy.array( [c.radius for c in circles]+otherDists )
         indices = numpy.array( range(ncircles) +[-1]*len(otherDists) )
@@ -1360,14 +1358,14 @@ class ShapeReco(inkex.Effect):
         debug(' post radius ',[c.radius for c in circles] )
         return allDist
 
-    def alignCircSegments(self, circles, segments, relSize=0.15):
+    def alignCircSegments(self, circles, segments, relSize=0.18):
         for circ in circles:
             circ.moved = False
         for seg in segments:
             for circ in circles:                
                 d = seg.distanceTo(circ.center)
-                debug(' align ',circ, d, '  ',circ.center, ' d=',d, circ.radius)
-                debug( '      ', seg.projectPoint(circ.center))
+                #debug(' align ',circ, d, '  ',circ.center, ' d=',d, circ.radius)
+                #debug( '      ', seg.projectPoint(circ.center))
                 if d < circ.radius*relSize and not circ.moved :
                     circ.center = seg.projectPoint(circ.center)
                     circ.moved = True
@@ -1382,8 +1380,6 @@ class ShapeReco(inkex.Effect):
             seg.newAngle = knownAngle[i]
             debug( '  Known angle ', seg.tempAngle(),'  -> ', knownAngle[i]) 
             ## if abs(knownAngle[i] - a) < 0.08:
-            ##     debug( '  Known angle ', seg.tempAngle(),'  -> ', knownAngle[i]) 
-            ##     seg.newAngle = knownAngle[i]
 
         
 
