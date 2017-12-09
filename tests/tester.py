@@ -11,6 +11,7 @@ import shapereco
 e = shapereco.ShapeReco()
 print sys.argv
 
+testA = numpy.array(range(5))
 
 def test(n):
     if isinstance(n,str):

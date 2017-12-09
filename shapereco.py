@@ -142,7 +142,7 @@ def debug_on(*l):
     #inkex.errormsg(' '.join(str(i) for i in l) ) 
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
-#debug = debug_on
+debug = debug_on
 
 # *************************************************************
 # Internal Objects
@@ -992,7 +992,7 @@ def reformatList( refSVGPathList, paths):
     return newList
 
 
-def clusterValues( values, relS=0.1 , refScaleAbs=True  ):
+def clusterValues( values, relS=0.1 , refScaleAbs='range'  ):
     """form clusters of similar quantities from input 'values'.
     Clustered values are not necessarily contiguous in the input array. 
     Clusters size (that is max-min) is < relS*cluster_average """
@@ -1029,15 +1029,19 @@ def clusterValues( values, relS=0.1 , refScaleAbs=True  ):
         def originIndices(self):
             return tuple(int(sortedV[i][1]) for i in self.indices)
 
-    def size_fromcl(self):
+    def size_local(self):
         return self.delta / sum( sortedVV[i] for i in self.indices) *len(self.indices)
-    def size_abs(self):
+    def size_range(self):
         return self.delta/refScale
+    def size_abs(self):
+        return self.delta
 
-    if refScaleAbs:
+    if refScaleAbs=='range':
+        Cluster.size = size_range
+    elif refScaleAbs=='local':
+        Cluster.size = size_local
+    elif refScaleAbs=='abs':
         Cluster.size = size_abs
-    else:
-        Cluster.size = size_fromcl
         
     class ClusterPair:
         next=None
@@ -1281,37 +1285,22 @@ class ShapeReco(inkex.Effect):
             
     
     def prepareParrallelize(self,segs):
-        """Group Segment by their angles (segments are grouped together if their deltAangle is within 0.02 rad)
-        The angles of segments in a group are then set to the  angle of sum(unit_vector) where the sum runs on the group
+        """Group Segment by their angles (segments are grouped together if their deltAangle is within 0.15 rad)
+        The 'newAngle' member of segments in a group are then set to the mean angle of the group (where angles are all
+        considered in [-pi, pi])
 
-        segs ; list of segments
+        segs : list of segments
         """
-        
-        closeAngleSet = {}
-        for (i, seg1) in enumerate(segs):
-                for seg2 in segs[i+1:]:
-                    #print i, closeAngleAbs(seg1.angle , seg2.angle), abs(seg1.costheta(seg2)), '__',seg1.angle , seg2.angle
-                    if abs(seg1.costheta(seg2)) > 0.99: # 0.99 ~ 8 deg
-                        l1=closeAngleSet.get(seg1,set())
-                        l1.add(seg1)
-                        l1.add(seg2)
-                        closeAngleSet[seg2] = l1
-                        debug('parralelize ',seg1.dump() , seg2.dump())
-        debug('parralelize : ', len(closeAngleSet))
-        sign = numpy.sign
-        for segs in closeAngleSet.values():            
-            lsegs = list(segs)
-            s0 = lsegs[0]
-            signs = [sign(s0.costheta(seg )) for seg in lsegs]
-            m = sum( si*s.unitv for (si,s) in zip(signs,lsegs) )
-            m /= numpy.sqrt(m.dot(m))
 
-            meanAngle0 = numpy.arccos( m[0] )*numpy.sign(m[1] )
-            meanAngle1 = -numpy.arccos( -m[0] )*numpy.sign(m[1] )
-            for i,s in enumerate(segs):
-                #s.newAngle = meanAngle0 if signs[i]>=0 else meanAngle1
-                s.newAngle =  meanAngle1 if deltaAngleAbs(meanAngle1, s.angle) < deltaAngleAbs(meanAngle0, s.angle) else meanAngle0
-                debug( ' mean angles : ', s.angle , ' --> ', s.newAngle, ' XXXX ',meanAngle0 , meanAngle1)
+        angles = numpy.array([s.angle for s in segs ])
+        angles[numpy.where(angles<0)] += _pi # we care about direction, not angle orientation
+        clList = clusterValues(angles, 0.15, refScaleAbs='abs')
+
+        for cl in clList:
+            meanA = angles[list(cl)].mean()
+            for i in cl:
+                seg = segs[i]
+                seg.newAngle = meanA if seg.angle>0 else meanA-_pi
 
 
     def prepareDistanceEqualization(self,segs, relDelta=0.1):
@@ -1349,21 +1338,20 @@ class ShapeReco(inkex.Effect):
         Then set circles radius according to the mean of the clusters they belong to."""
         ncircles = len(circles)
         lengths = numpy.array( [c.radius for c in circles]+otherDists )
-        indices = numpy.array( range(ncircles) +[-1]*len(otherDists) )
-        clusters = clusterValues(numpy.stack([ lengths, indices ],1 ), relSize, refScaleAbs=False )
+        indices = numpy.array( range(ncircles+len(otherDists) ) )
+        clusters = clusterValues(numpy.stack([ lengths, indices ],1 ), relSize, refScaleAbs='local' )
 
         debug('prepareRadiusEqualization radius ', repr(lengths))
         debug('prepareRadiusEqualization clusters ',  clusters)
         allDist = []
         for cl in clusters:
             dmean = sum( lengths[i] for i in cl ) / len(cl)
+            #print cl , dmean , 
             allDist.append(dmean)
             if len(cl)==1:
                 continue
             for i in cl:
-                if i==-1:
-                    continue
-                elif i< ncircles:
+                if i< ncircles:
                     circles[i].radius = dmean
         debug(' post radius ',[c.radius for c in circles] )
         return allDist
@@ -1718,13 +1706,16 @@ class ShapeReco(inkex.Effect):
 
 
 
-    def extractShapesFromID( self, nid ):
+    def extractShapesFromID( self, *nids ):
         """for debugging purpose """
-        el = self.getElementById(nid)
-        if el is None:
-            print "Cant find ", nid
-            return
-        nodes=self.extractShapes([el])
+        eList = []
+        for nid in nids:
+            el = self.getElementById(nid)
+            if el is None:
+                print "Cant find ", nid
+                return
+            eList.append(el)
+        nodes=self.extractShapes(eList)
         class tmp:
             pass
         self.options = tmp()
