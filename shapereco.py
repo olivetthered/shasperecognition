@@ -142,7 +142,7 @@ def debug_on(*l):
     #inkex.errormsg(' '.join(str(i) for i in l) ) 
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
-debug = debug_on
+#debug = debug_on
 
 # *************************************************************
 # Internal Objects
@@ -509,6 +509,15 @@ class PathGroup(object):
         ele = addPath( newList , node)
         debug("PathGroup ", newList)
         return ele
+
+
+    @staticmethod
+    def toSegments(points, refSVGPathList, refNode, isClosing=False):
+        """
+        """
+        segs = [ Segment.from2Points(p, points[i+1], points[i:i+2] ) for (i,p) in enumerate(points[:-1]) ]
+        resetPrevNextSegment(segs)
+        return PathGroup( segs, refSVGPathList, refNode , isClosing)
 
 class TangentEnvelop(PathGroup):
     """Specialization where the Path objects are all Segments and represent tangents to a curve """
@@ -1333,6 +1342,7 @@ class ShapeReco(inkex.Effect):
                 
         return allDist
 
+
     def prepareRadiusEqualization(self, circles, otherDists, relSize=0.2):
         """group circles radius and distances into cluster.
         Then set circles radius according to the mean of the clusters they belong to."""
@@ -1356,7 +1366,9 @@ class ShapeReco(inkex.Effect):
         debug(' post radius ',[c.radius for c in circles] )
         return allDist
 
+
     def alignCircSegments(self, circles, segments, relSize=0.18):
+        """ move centers of circles onto the segments if close enough"""
         for circ in circles:
             circ.moved = False
         for seg in segments:
@@ -1408,7 +1420,6 @@ class ShapeReco(inkex.Effect):
         diag = sqrt(diag2)*0.5
         norms = numpy.sqrt(numpy.sum( tangents**2, 1 ))
 
-        #debug( 'tangents ', tangents)
         angles = numpy.arccos( tangents[:,0] /norms ) *numpy.sign( tangents[:,1] )
         #debug( 'angle = ', repr(angles))
         N = len(angles)
@@ -1507,18 +1518,25 @@ class ShapeReco(inkex.Effect):
         
         """
         sourcepoints, svgCommandsList = toArray(svgCommandsList)
-        tangents = buildTangents(sourcepoints)
 
-        # global quantities :
+        d = D(sourcepoints[0],sourcepoints[-1])
         x,y,wTot,hTot = computeBox(sourcepoints)
         aR = min(wTot/hTot, hTot/wTot)
         maxDim = max(wTot, hTot)
-        d = D(sourcepoints[0],sourcepoints[-1])
         isClosing = aR*0.2 > d/maxDim
         debug('isClosing ', isClosing, maxDim, d)
 
+        if len(sourcepoints) < 4:
+            return PathGroup.toSegments(sourcepoints, svgCommandsList, refNode, isClosing=isClosing)
+        
+        tangents = buildTangents(sourcepoints)
+
+        # global quantities :
+
         # Check if circle -----------------------
         if isClosing:
+            if len(sourcepoints)<9:
+                return PathGroup.toSegments(sourcepoints, svgCommandsList, refNode, isClosing=True)
             isCircle, res = self.checkForCircle( sourcepoints, tangents)        
             debug("Is Circle = ", isCircle )
             if isCircle:
@@ -1530,7 +1548,7 @@ class ShapeReco(inkex.Effect):
                     circ = Circle((x,y),rmin,  refNode, rmax=rmax, angle=angle)
                 circ.points = sourcepoints
                 return circ
-
+            
 
 
         # cluster points by angle of their tangents -------------
