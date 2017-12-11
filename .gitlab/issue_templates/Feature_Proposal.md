@@ -6,4 +6,4 @@
 
 ### Links / references
 
-/label ~"feature proposal"
+/label ~"enhancement"
