@@ -2,9 +2,11 @@
 '''
 Copyright (C) 2017 , Pierre-Antoine Delsart
 
-This program is free software; you can redistribute it and/or modify
+This file is part of InkscapeShapeReco.
+
+InkscapeShapeReco is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
+the Free Software Foundation; either version 3 of the License, or
 (at your option) any later version.
 
 This program is distributed in the hope that it will be useful,
@@ -13,7 +15,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
+along with InkscapeShapeReco; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 
@@ -155,7 +157,7 @@ class Path(object):
     startIndexSource = 0 # position of first point in the full original array of point
     sourcepoints = None  # the full list of points from which this path is a subset
 
-    normalv = None
+    normalv = None # normal vector to this Path 
     
     def __init__(self, points):
         """points an array of points """
@@ -174,9 +176,9 @@ class Path(object):
             
     def isSegment(self):
         return False
+
     def quality(self):
-        return 1000
-        
+        return 1000        
 
     def dump(self):
         n = len(self.points)
@@ -187,7 +189,7 @@ class Path(object):
 
     def setNewLength(self, l):
         self.newLength = l
-
+        
     def removeLastPoints(self,n):
         self.points = self.points[:-n]
         self.init()
@@ -1080,19 +1082,22 @@ def clusterValues( values, relS=0.1 , refScaleAbs='range'  ):
     def reduceCL( cList ):
         if len(cList)<=1:
             return cList
-        cp = min(cList, key=lambda cp:cp.size)
+        cp = min(cList, key=lambda cp:cp.size)    
         #print '==', cp.size , relS, cp.c1.indices , cp.c2.indices, cp.potentialC.indices
-        if cp.size > relS:
-            return cList
-        if cp.next:
-            cp.next.setC1(cp.potentialC)
-            cp.next.prev = cp.prev
-        if cp.prev:
-            cp.prev.setC2(cp.potentialC)
-            cp.prev.next = cp.next
-        cList.remove(cp)
+
+        while cp.size < relS:
+            if cp.next:
+                cp.next.setC1(cp.potentialC)
+                cp.next.prev = cp.prev
+            if cp.prev:
+                cp.prev.setC2(cp.potentialC)
+                cp.prev.next = cp.next
+            cList.remove(cp)
+            if len(cList)<2:
+                break
+            cp = min(cList, key=lambda cp:cp.size)    
         #print ' -----> ', [ (cp.c1.indices , cp.c2.indices) for cp in cList]
-        return reduceCL(cList)
+        return cList
 
     cpList = reduceCL(cpList)
     if len(cpList)==1:
