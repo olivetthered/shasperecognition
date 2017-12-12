@@ -856,6 +856,11 @@ class SegmentExtender:
 
     There are 2 concrete subclasses for extending forward and backward (due to technical reasons).
     """
+
+    def __init__(self, relD, fitQ):
+        self.relD = relD
+        self.fitQ = fitQ
+        
     def nextPaths(self,seg):
         pL = []
         p = self.getNext(seg) # prev or next
@@ -874,12 +879,12 @@ class SegmentExtender:
         debug('extend ',self.extDir, seg , nextPathL)
         if nextPathL==[]: return seg
         distancesToLine =abs(seg.a*pointsToTest[:,0]+seg.b*pointsToTest[:,1]+seg.c)
-        mergeD = seg.length*0.03
+        mergeD = seg.length*self.relD
         pointsToFit, addedPoints = self.pointsToFit(seg,pointsToTest, distancesToLine, mergeD)
         if len(pointsToFit)==0:
             return seg
         newseg = fitSingleSegment(pointsToFit)
-        if newseg.quality()>0.5: # fit failed
+        if newseg.quality()>self.fitQ: # fit failed
             return seg
         #debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
         self.removePath(seg, newseg, nextPathL, addedPoints )
@@ -890,11 +895,11 @@ class SegmentExtender:
         return newseg
 
     @staticmethod
-    def extendSegments(segmentList):
+    def extendSegments(segmentList, relD=0.03, qual=0.5):
         """Perform Segment extension from list of Path segmentList
         returns the updated list of Path objects"""
-        fwdExt = FwdExtender()
-        bwdExt = BwdExtender()
+        fwdExt = FwdExtender(relD, qual)
+        bwdExt = BwdExtender(relD, qual)
         # tag all objects with an attribute pointing to the extended object
         for seg in segmentList:            
             seg.mergedObj = seg # by default the extended object is self
@@ -1120,11 +1125,35 @@ class ShapeReco(inkex.Effect):
     def __init__(self):
         inkex.Effect.__init__(self)
         self.OptionParser.add_option("--title")
-        self.OptionParser.add_option("-k", "--keepOrigin",
-                        action="store", type="inkbool", 
-                        dest="keepOrigin", default=False,
-                        help="Do not replace path")
-        self.defPathName = [] # debugging only
+        self.OptionParser.add_option("-k", "--keepOrigin", dest="keepOrigin", default=False,
+                                     action="store", type="inkbool",                                      
+                                     help="Do not replace path")
+
+        self.OptionParser.add_option( "--MainTabs")
+        self.OptionParser.add_option( "--Basics")
+
+        self.OptionParser.add_option( "--segExtensionDtoSeg", dest="segExtensionDtoSeg", default=0.03,
+                                      action="store", type="float",                                      
+                                      help="max distance from point to segment")
+        self.OptionParser.add_option( "--segExtensionQual", dest="segExtensionQual", default=0.5,
+                                      action="store", type="float",                                      
+                                      help="segment extension fit quality")
+        self.OptionParser.add_option( "--segExtensionEnable", dest="segExtensionEnable", default=True,
+                                      action="store", type="inkbool",                                      
+                                      help="Enable segment extension")
+
+
+        self.OptionParser.add_option( "--segAngleMergeEnable", dest="segAngleMergeEnable", default=True,
+                                      action="store", type="inkbool",                                      
+                                      help="Enable merging of almost aligned consecutive segments")
+
+        self.OptionParser.add_option( "--segRemoveSmallEdge", dest="segRemoveSmallEdge", default=True,
+                                      action="store", type="inkbool",                                      
+                                      help="Enable removing very small segments")
+
+        self.OptionParser.add_option( "--doUniformization", dest="doUniformization", default=True,
+                                     action="store", type="inkbool",                                      
+                                     help="Preform angles and distances uniformization")
 
 
     def effect(self):
@@ -1134,10 +1163,6 @@ class ShapeReco(inkex.Effect):
         for id, node in self.selected.iteritems():
             if node.tag == '{http://www.w3.org/2000/svg}path' and rej not in node.keys():                
                 paths.append(node)
-        if paths == []:
-            paths=[self.getElementById(n) for n in self.defPathName]
-        else:
-            p = paths[0]
 
         shapes = self.extractShapes(paths)
         # add new shapes in SVG document
@@ -1150,8 +1175,8 @@ class ShapeReco(inkex.Effect):
         if len(paths)<2:
             return
         def getdiag(points):
-            xmin,ymin,w,h = computeBox(p.points)
-            return sqrt(w**2+h**2)
+            xmin,ymin,w,h = computeBox(points)
+            return sqrt(w**2+h**2), w, h
         removeSeg=[]
         def remove(p):
             removeSeg.append(p)
@@ -1168,14 +1193,18 @@ class ShapeReco(inkex.Effect):
             if next is None: next = prev
             if prev is None: prev = next
             if not next.isSegment() or not prev.isSegment() : continue
-            diag = getdiag(p.points)
+            #diag = getdiag(p.points)
+            diag ,w, h = getdiag(p.points)
 
             debug(p, p.pointN, ' removing edge  diag = ', diag, p.length,  '  l=',next.length+prev.length)
             debug( '    ---> ',prev, next)
             if diag > (next.length+prev.length)*0.1 : continue
-            if diag > 0.2*wTot or diag > 0.2*hTot: continue # avoid removing if significant on total
+            if w > 0.2*wTot or h > 0.2*hTot: continue # avoid removing if significant on total
             # Avoid removing connecting path between 2 long rectangle side
-            if diag > D(next.pointN, prev.point1)*0.5: continue
+            dd = prev.distanceTo(next.pointN)
+            if abs(prev.unitv.dot(next.unitv))>0.98 and diag > dd*0.5: continue
+            #if diag > D(next.pointN, prev.point1)*0.5: continue
+            #if diag > dd*0.5: continue
             remove(p)
 
             if next != prev:
@@ -1405,19 +1434,17 @@ class ShapeReco(inkex.Effect):
         nd false positive due to badly drawn rectangle or non-convex closed curves.
         
         Method : we consider angle of tangent as function of lenght on path.
-        For circles these are : angle = c1 x lenght + c0.
-        We thus fit a line in the (angle, lenght) plane.
-        If the path is made of segments, then angle will be constants on large windows,
-        thus the distance to fitted line will be bad for a large num of points.
-        we use the quantiles above 85% as a quantifier.
-        We also use a 2nd criteria : the number of groups of angles we can build from all
-        tangent angles in the path. The ratio num_group/num_points is much lower for paths
-        containing straight lines.
+        For circles these are : angle = c1 x lenght + c0. (c1 ~1)
+
+        We calculate dadl = d(angle)/d(length) and compare to c1.
+        We use 2 criteria :
+         * num(dadl > 6) : number of sharp angles
+         * length(dadl<0.4)/totalLength : lengths of straight lines within the path.
 
         Still failing to recognize elongated ellipses...
         
         """
-        if len(points)<6:
+        if len(points)<10:
             return False, 0
         xmin,ymin, w, h = computeBox( points)
         diag2=(w*w+h*h)
@@ -1437,7 +1464,6 @@ class ShapeReco(inkex.Effect):
         deltasD = numpy.concatenate([ [0.], numpy.sqrt(numpy.sum( deltas**2, 1 )) / diag] )
 
 
-
         # locate and avoid the point when swicthing
         # from -pi to +pi. The point is around the minimum
         imin = numpy.argmin(angles)
@@ -1451,28 +1477,34 @@ class ShapeReco(inkex.Effect):
         deltasD = deltasD.cumsum()
         N = len(angles)
 
-        # fit a line 
-        angles_vs_d = numpy.stack([ deltasD, angles] ,1)
-        seg =regLin( angles_vs_d )
-        #dist_to_fit = numpy.abs( angles + (seg.a*angles_vs_d[:,0]+seg.c)/seg.b )
-        dist_to_fit = seg.computeDistancesToLine(angles_vs_d)
-        #dist_to_fit_o = dist_to_fit.copy()
-        dist_to_fit.sort()
-        debug('fit q',seg.quality() , '  d50=', dist_to_fit[int(N*0.5)], ' d85=',dist_to_fit[int(N*0.85)], ' meanD=',dist_to_fit.mean())
+        deltaA = angles[1:] - angles[:-1]
+        deltasDD =  (deltasD[1:] -deltasD[:-1])
+        deltasDD[numpy.where(deltasDD==0.)] = 1e-5*deltasD[0]
+        dAdD = abs(deltaA/deltasDD)
+        belowT, count = True,0
+        for v in dAdD:
+            if v>6 and belowT:
+                count+=1
+                belowT = False
+            belowT= (v<6)
 
-        self.temp = (deltasD,angles, -(seg.a*angles_vs_d[:,0]+seg.c)/seg.b , dist_to_fit)
-        dTest = dist_to_fit[int(N*0.6)]
+        self.temp = (deltasD,angles, [], dAdD )
+        fracStraight = numpy.sum(deltasDD[numpy.where(dAdD<0.4)])/(deltasD[-1]-deltasD[0])
+        curveLength = deltasD[-1]/3.14
+        #print "SSS ",count , fracStraight
+        if curveLength> 1.5:
+            isCircle =False
+        elif  count < 3:
+            isCircle = True
+        elif count > 8:
+            isCircle=False
+        else: 
+            isCircle= (count < 5 and fracStraight<=0.3) or \
+                      (fracStraight<=0.3 and curveLength<1.10)
 
-        if dTest > 0.4: #empirical
-            return False,0
-        if dTest > 0.2: #empirical
-            # other test : num cluster of angles
-            clList= clusterValues(angles)
-            #clList.sort(key=lambda cl:len(cl))    
-            nclF = len(clList)/float(N)
-            if nclF<0.2:
-                return False, 0
-
+        if not isCircle:
+            return False, 0
+            
         # It's a circle !
         radius = points - numpy.array([xmin+w*0.5,ymin+h*0.5])
         radius_n = numpy.sqrt(numpy.sum( radius**2, 1 )) # normalize
@@ -1596,8 +1628,6 @@ class ShapeReco(inkex.Effect):
             if hasattr(seg,'merged'): continue
             mergeList = toMerge(seg)
             debug('merging ', mergeList)
-            for p in mergeList:
-                debug(' ----> ', p.points)
             p = Path(numpy.concatenate([ p.points for p in mergeList]) )
             p.startIndexSource = mergeList[0].startIndexSource
             debug('merged == ', p.points)
@@ -1610,10 +1640,11 @@ class ShapeReco(inkex.Effect):
 
 
         # Extend segments -----------------------------------
-
-        newSegs = SegmentExtender.extendSegments( newSegs )
-        resetStartIndexes(newSegs)
-        debug("extended segs", newSegs)
+        if self.options.segExtensionEnable:
+            newSegs = SegmentExtender.extendSegments( newSegs, self.options.segExtensionDtoSeg, self.options.segExtensionQual )
+            resetStartIndexes(newSegs)
+            newSegs = resetPrevNextSegment( updatedSegs )
+            debug("extended segs", newSegs)
 
         # ----------------------------------------
 
@@ -1678,20 +1709,34 @@ class ShapeReco(inkex.Effect):
             if not hasattr(segList[-1], 'merged') : updatedSegs.append( segList[-1])
             return updatedSegs
 
-        newSegs = mergeList( newSegs , mangle=0.2 )
-        newSegs=resetPrevNextSegment(newSegs)
-        debug(' __ 2nd angle merge')
-        newSegs = mergeList( newSegs, mangle=0.35 ) # 2nd pass
-        newSegs=resetPrevNextSegment(newSegs)
-        debug('after merge ', len(newSegs), newSegs)
-
+        if self.options.segAngleMergeEnable:
+            newSegs = mergeList( newSegs , mangle=0.2 )
+            newSegs=resetPrevNextSegment(newSegs)
+            debug(' __ 2nd angle merge')
+            newSegs = mergeList( newSegs, mangle=0.35 ) # 2nd pass
+            newSegs=resetPrevNextSegment(newSegs)
+            debug('after merge ', len(newSegs), newSegs)
+            # Check if first and last also have close angles.
+            if isClosing:
+                first ,last = newSegs[0], newSegs[-1]
+                if first.isSegment() and last.isSegment():
+                    if closeAngleAbs( first.angle, last.angle) < 0.1:
+                        # force merge
+                        points= numpy.concatenate( [  last.points, first.points] )
+                        newseg = fitSingleSegment(points)
+                        newseg.startIndexSource=0
+                        newseg.next = first.next
+                        last.prev.next = None
+                        newSegs[0]=newseg
+                        newSegs.pop()
 
         # -----------------------------------------------------
         # remove negligible Path/Segments between 2 large Segments
-        self.removeSmallEdge(newSegs , wTot, hTot)
-        newSegs=resetPrevNextSegment(newSegs)
+        if self.options.segRemoveSmallEdge:
+            self.removeSmallEdge(newSegs , wTot, hTot)
+            newSegs=resetPrevNextSegment(newSegs)
 
-        debug('after remove small ', len(newSegs),newSegs)
+            debug('after remove small ', len(newSegs),newSegs)
         # -----------------------------------------------------
 
         # -----------------------------------------------------
@@ -1729,7 +1774,7 @@ class ShapeReco(inkex.Effect):
 
 
 
-    def extractShapesFromID( self, *nids ):
+    def extractShapesFromID( self, *nids, **options ):
         """for debugging purpose """
         eList = []
         for nid in nids:
@@ -1738,11 +1783,12 @@ class ShapeReco(inkex.Effect):
                 print "Cant find ", nid
                 return
             eList.append(el)
-        nodes=self.extractShapes(eList)
         class tmp:
             pass
-        self.options = tmp()
-        self.options.keepOrigin=False
+
+        self.options = self.OptionParser.parse_args(**options)[0]
+
+        nodes=self.extractShapes(eList)
         self.shape = nodes[0]
 
 
@@ -1789,7 +1835,8 @@ class ShapeReco(inkex.Effect):
                 analyzedNodes.append( g )
 
         # uniformize shapes
-        self.uniformizeShapes(analyzedNodes)
+        if self.options.doUniformization:
+            self.uniformizeShapes(analyzedNodes)
 
         return analyzedNodes
 
