@@ -49,4 +49,4 @@ Usage
 If you have draw a blue square and circle as below, you should obtain
    shapes as those in red 
 
-![example]( doc/logo.png ) 
+![example]( doc/logo.svg ) 
