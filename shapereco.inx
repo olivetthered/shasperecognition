@@ -42,6 +42,12 @@
 
     <!-- Uniformization ********** -->
     <page name="page_unif" gui-text="Uniformization">
+      <param name="doParrallelize" type="boolean"
+             _gui-text="Parralelize segments">true</param>
+      <param name="doKnownAngle" type="boolean" _gui-text="Set segment angles to closest remarkable angles">true</param>
+      <param name="doEqualizeDist" type="boolean" _gui-text="Equalize segments of similar length">true</param>
+      <param name="doEqualizeRadius" type="boolean" _gui-text="Equalize circle radius of similar length">true</param>
+      <param name="doCenterCircOnSeg" type="boolean" _gui-text="Center circle center on nearby segment">true</param>
     </page>
 
   </param>

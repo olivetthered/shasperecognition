@@ -37,3 +37,16 @@ On linux : copy the  `shapereco.py` and `shapereco.inx` into your
 
 On other systems, I'm not sure. Something equivalent should work ?
 
+
+Usage
+======
+
+1. Draw 1 or several paths with the freehand tool
+2. Select these paths
+1. In the menu, choose "Extension" -> "Generate from path" -> "Shape
+   recognition"
+   
+If you have draw a blue square and circle as below, you should obtain
+   shapes as those in red 
+
+![example]( doc/logo.png ) 

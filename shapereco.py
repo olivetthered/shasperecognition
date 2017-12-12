@@ -852,7 +852,7 @@ def mergeConsecutiveParralels(segments):
 ##**************************************
 ## 
 class SegmentExtender:
-    """Extend Segments from a list of Path by aggregating points in neighbouring Path objects.
+    """Extend Segments part of a list of Path by aggregating points from neighbouring Path objects.
 
     There are 2 concrete subclasses for extending forward and backward (due to technical reasons).
     """
@@ -984,7 +984,7 @@ def addPath(newList, refnode):
     return ele
 
 def reformatList( refSVGPathList, paths):
-    """ Returns a SVG paths list in (same format as simplepath.parsePath) from a list of our Path 'paths'.
+    """ Returns a SVG paths list (same format as simplepath.parsePath) from a list of Path objects
      - Segments in paths are added in the new list
      - simple Path are retrieved from the original refSVGPathList and put in the new list (thus preserving original bezier curves)
     """
@@ -1130,7 +1130,7 @@ class ShapeReco(inkex.Effect):
                                      help="Do not replace path")
 
         self.OptionParser.add_option( "--MainTabs")
-        self.OptionParser.add_option( "--Basics")
+        #self.OptionParser.add_option( "--Basic")
 
         self.OptionParser.add_option( "--segExtensionDtoSeg", dest="segExtensionDtoSeg", default=0.03,
                                       action="store", type="float",                                      
@@ -1155,7 +1155,12 @@ class ShapeReco(inkex.Effect):
                                      action="store", type="inkbool",                                      
                                      help="Preform angles and distances uniformization")
 
+        for opt in ["doParrallelize", "doKnownAngle", "doEqualizeDist" , "doEqualizeRadius" , "doCenterCircOnSeg"]:
+            self.OptionParser.add_option( "--"+opt, dest=opt, default=True,
+                                          action="store", type="inkbool",                                      
+                                          help=opt)
 
+        
     def effect(self):
 
         rej='{http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd}type'
@@ -1401,14 +1406,13 @@ class ShapeReco(inkex.Effect):
         return allDist
 
 
-    def alignCircSegments(self, circles, segments, relSize=0.18):
+    def centerCircOnSeg(self, circles, segments, relSize=0.18):
         """ move centers of circles onto the segments if close enough"""
         for circ in circles:
             circ.moved = False
         for seg in segments:
             for circ in circles:                
                 d = seg.distanceTo(circ.center)
-                #debug(' align ',circ, d, '  ',circ.center, ' d=',d, circ.radius)
                 #debug( '      ', seg.projectPoint(circ.center))
                 if d < circ.radius*relSize and not circ.moved :
                     circ.center = seg.projectPoint(circ.center)
@@ -1844,27 +1848,38 @@ class ShapeReco(inkex.Effect):
     def uniformizeShapes(self, pathGroupList):
         allSegs = [ p  for g in pathGroupList for p in g.listOfPaths if p.isSegment() ]
 
-        self.prepareParrallelize(allSegs)
-        self.adjustToKnownAngle(allSegs)
+        if self.options.doParrallelize:
+            self.prepareParrallelize(allSegs)
+        if self.options.doKnownAngle:
+            self.adjustToKnownAngle(allSegs)
 
+        adjustAng = self.options.doKnownAngle or self.options.doParrallelize
         for group in pathGroupList:
             # first pass : independently per path
-            adjustAllAngles(group.listOfPaths)
-            group.listOfPaths[:] = mergeConsecutiveParralels(group.listOfPaths)
-            self.prepareDistanceEqualization([p for p in group.listOfPaths if p.isSegment()], 0.12)
-            adjustAllDistances(group.listOfPaths)            
+            if adjustAng:
+                adjustAllAngles(group.listOfPaths)
+                group.listOfPaths[:] = mergeConsecutiveParralels(group.listOfPaths)
+            if self.options.doEqualizeDist:
+                self.prepareDistanceEqualization([p for p in group.listOfPaths if p.isSegment()], 0.12)
+                adjustAllDistances(group.listOfPaths)            
         ## # then 2nd global pass, with tighter criteria
-        allShapeDist=self.prepareDistanceEqualization(allSegs, 0.05)
-        for group in pathGroupList:
-            adjustAllDistances(group.listOfPaths)
-
+        if self.options.doEqualizeDist:
+            allShapeDist=self.prepareDistanceEqualization(allSegs, 0.05)
+            for group in pathGroupList:
+                adjustAllDistances(group.listOfPaths)
+        else:
+            allShapeDist = []
+            
         for g in pathGroupList: 
             if g.isClosing and not isinstance(g,Circle):
                 debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
                 g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  
+
         circles=[ group for group in pathGroupList if isinstance(group, Circle)]
-        self.prepareRadiusEqualization(circles, allShapeDist)
-        self.alignCircSegments(circles, allSegs)
+        if self.options.doEqualizeRadius:
+            self.prepareRadiusEqualization(circles, allShapeDist)
+        if self.options.doCenterCircOnSeg:
+            self.centerCircOnSeg(circles, allSegs)
 
         
         
