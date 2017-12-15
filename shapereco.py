@@ -176,10 +176,9 @@ def barycenter(points):
 def void(*l):
     pass
 def debug_on(*l):
-    #inkex.errormsg(' '.join(str(i) for i in l) ) 
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
-debug = debug_on
+#debug = debug_on
 
 # *************************************************************
 # Internal Objects
@@ -189,7 +188,6 @@ class Path(object):
     """
     next = None # next Path in the sequence of path corresponding to a SVG node
     prev = None # previous Path in the sequence of path corresponding to a SVG node
-    startIndexSource = 0 # position of first point in the full original array of point
     sourcepoints = None  # the full list of points from which this path is a subset
 
     normalv = None # normal vector to this Path 
@@ -230,7 +228,6 @@ class Path(object):
         self.init()
     def removeFirstPoints(self,n):
         self.points = self.points[n:]
-        self.startIndexSource += n
         self.init()
 
     def costheta(self,seg):
@@ -240,7 +237,7 @@ class Path(object):
         """Translate this path by tr"""
         self.points = self.points + tr
 
-    def formatToSVG(self, firstP=False):
+    def asSVGCommand(self, firstP=False):
         svgCommands = []
         com = 'M' if firstP else 'L'
         for p in self.points:
@@ -259,7 +256,6 @@ class Path(object):
         if newPath is None: newPath = Path( numpy.concatenate([self.points, self.next.points]) )
 
         newPath.sourcepoints = self.sourcepoints
-        newPath.startIndexSource = self.startIndexSource
         newPath.prev = self.prev
         if self.prev : newPath.prev.next = newPath
         newPath.next = self.next.next
@@ -411,7 +407,7 @@ class Segment(Path):
         return
 
     def dumpShort(self):
-        return 'seg  '+str(self.startIndexSource)+'  '+str(self.point1 )+'to '+str(self.pointN)+ ' npoints=%d | angle,offset=(%.2f,%.2f )'%(len(self.points),self.angle, self.c)+'  ',self.normalv
+        return 'seg  '+'  '+str(self.point1 )+'to '+str(self.pointN)+ ' npoints=%d | angle,offset=(%.2f,%.2f )'%(len(self.points),self.angle, self.c)+'  ',self.normalv
 
     def dump(self):
         v = self.variance()
@@ -427,9 +423,9 @@ class Segment(Path):
         return min(self.variance()/self.length*numpy.sqrt(n) , 1000)
 
     def formatedSegment(self, firstP=False):
-        return self.formatToSVG(firstP)
+        return self.asSVGCommand(firstP)
     
-    def formatToSVG(self, firstP=False):
+    def asSVGCommand(self, firstP=False):
 
         if firstP:            
             segment = [ ['M',[self.point1[0],self.point1[1] ] ],
@@ -569,7 +565,7 @@ class TangentEnvelop(PathGroup):
     def addToNode(self, node):
         newList = [ ]
         for s in self.listOfPaths:
-            newList += s.formatToSVG(firstP=True)
+            newList += s.asSVGCommand(firstP=True)
         debug("TangentEnvelop ", newList)
         ele = addPath( newList , node)
         return ele
@@ -715,11 +711,6 @@ def resetPrevNextSegment(segs):
         s.prev = seg           
     return segs
 
-def resetStartIndexes(segs):
-    acc = segs[0].startIndexSource + len(segs[0].points)
-    for s in segs[1:]:
-        s.startIndexSource = acc
-        acc += len(s.points)
 
 def fitSingleSegment(a):
     xmin,ymin,w,h = computeBox(a)
@@ -1024,6 +1015,51 @@ class BwdExtender(SegmentExtender):
 
 
 
+# merge consecutive segments with close angle
+
+def mergeConsecutiveCloseAngles( segList , mangle =0.25 , q=0.5):
+
+    def toMerge(seg):
+        l=[seg]
+        setattr(seg, 'merged', True)
+        if seg.next and seg.next.isSegment() :
+            debug('merging segs ', seg.angle, ' with : ' ,seg.next.point1, seg.next.pointN, ' ang=',seg.next.angle)
+            if deltaAngleAbs( seg.angle, seg.next.angle) < mangle:
+                l += toMerge(seg.next)
+        return l
+
+    updatedSegs = []
+    for i,seg in enumerate(segList[:-1]):
+        if not seg.isSegment() :
+            updatedSegs.append(seg)
+            continue
+        if  hasattr(seg,'merged'):
+            continue
+        debug(i,' inspect merge : ', seg.point1,'-',seg.pointN, seg.angle , ' q=',seg.quality())
+        mList = toMerge(seg)
+        debug('  --> tomerge ', len(mList))
+        if len(mList)<2:
+            delattr(seg, 'merged')
+            updatedSegs.append(seg)
+            continue
+        points= numpy.concatenate( [p.points for p in mList] )
+        newseg = fitSingleSegment(points)
+        if newseg.quality()>q:
+            delattr(seg, 'merged')
+            updatedSegs.append(seg)
+            continue
+        for p in mList:
+            setattr(seg, 'merged',True)
+        newseg.sourcepoints = seg.sourcepoints
+        debug('  --> post merge qual = ', newseg.quality() , seg.pointN, ' --> ', newseg.pointN, newseg.angle)
+        newseg.prev = mList[0].prev
+        newseg.next = mList[-1].next
+        updatedSegs.append(newseg)
+    if not hasattr(segList[-1], 'merged') : updatedSegs.append( segList[-1])
+    return updatedSegs
+
+
+
 
 def parametersFromPointAngle(point, angle):
     unitv = numpy.array([ numpy.cos(angle), numpy.sin(angle) ])
@@ -1052,7 +1088,7 @@ def reformatList( listOfPaths):
     newList = []
     first = True
     for  seg in listOfPaths:        
-        newList += seg.formatToSVG(first)
+        newList += seg.asSVGCommand(first)
         first = False
     return newList
 
@@ -1388,9 +1424,10 @@ class ShapeReco(inkex.Effect):
         For circles these are : angle = c1 x lenght + c0. (c1 ~1)
 
         We calculate dadl = d(angle)/d(length) and compare to c1.
-        We use 2 criteria :
+        We use 3 criteria :
          * num(dadl > 6) : number of sharp angles
-         * length(dadl<0.4)/totalLength : lengths of straight lines within the path.
+         * length(dadl<0.3)/totalLength : lengths of straight lines within the path.
+         * totalLength/(2pi x radius) : fraction of lenght vs a plain circle
 
         Still failing to recognize elongated ellipses...
         
@@ -1412,10 +1449,6 @@ class ShapeReco(inkex.Effect):
         angles = numpy.arctan2(  tangents[:,1], tangents[:,0] )  
         #debug( 'angle = ', repr(angles))
         N = len(angles)
-        ## # shift everything before smoothing
-        ## angles += _twopi
-        ## angles = smoothArray(angles, n=max(int(N*0.03),2) )
-        ## angles -= _twopi # shift back
         
         deltas =  points[1:] - points[:-1] 
         deltasD = numpy.concatenate([ [D(points[0],points[-1])/diag], numpy.sqrt(numpy.sum( deltas**2, 1 )) / diag] )
@@ -1427,12 +1460,13 @@ class ShapeReco(inkex.Effect):
         angles = numpy.roll(angles, -imin)
         deltasD = numpy.roll(deltasD, -imin)
         n=int(N*0.1)
-        # avoid by removing points around the min
+        # avoid fluctuations by removing points around the min
         angles=angles[n:-n]
         deltasD=deltasD[n:-n]
         deltasD = deltasD.cumsum()
         N = len(angles)
 
+        # smooth angles to avoid artificial bumps
         angles = smoothArray(angles, n=max(int(N*0.03),2) )
 
         deltaA = angles[1:] - angles[:-1]
@@ -1563,7 +1597,6 @@ class ShapeReco(inkex.Effect):
                 seg = Segment.from2Points(sourcepoints[imin], sourcepoints[imax] , sourcepoints[imin:imax+1])
             else:
                 seg = Path( sourcepoints[imin:imax+1] )
-            seg.startIndexSource = imin
             seg.sourcepoints = sourcepoints
             newSegs.append( seg )
         resetPrevNextSegment( newSegs )
@@ -1589,12 +1622,10 @@ class ShapeReco(inkex.Effect):
             mergeList = toMerge(seg)
             debug('merging ', mergeList)
             p = Path(numpy.concatenate([ p.points for p in mergeList]) )
-            p.startIndexSource = mergeList[0].startIndexSource
             debug('merged == ', p.points)
             updatedSegs.append(p)
 
         if not hasattr(newSegs[-1],'merged'): updatedSegs.append( newSegs[-1]) 
-        #debug("unmerged path", newSegs)
         debug("merged path", updatedSegs)
         newSegs = resetPrevNextSegment( updatedSegs )
 
@@ -1612,54 +1643,12 @@ class ShapeReco(inkex.Effect):
         # ---------------------------------------
         # merge consecutive segments with close angle
         updatedSegs=[]
-        def toMerge(seg, mangle):
-            l=[seg]
-            setattr(seg, 'merged', True)
-            if seg.next and seg.next.isSegment() :
-                debug('merging segs ', seg.angle, ' with : ' ,seg.next.point1, seg.next.pointN, ' ang=',seg.next.angle)
-                #if closeAngleAbs( seg.angle, seg.next.angle) < mangle:
-                if deltaAngleAbs( seg.angle, seg.next.angle) < mangle:
-                    l += toMerge(seg.next,mangle)
-            ## if seg.next and len(seg.next.points)==1:
-            ##     l+=[seg.next] # try to merge a 1-point path
-            return l
-        def mergeList( segList , mangle =0.25 , q=0.5):
-            updatedSegs = []
-            for i,seg in enumerate(segList[:-1]):
-                if not seg.isSegment() :
-                    updatedSegs.append(seg)
-                    continue
-                if  hasattr(seg,'merged'):
-                    continue
-                debug(i,' inspect merge : ', seg.point1,'-',seg.pointN, seg.angle , ' q=',seg.quality())
-                mList = toMerge(seg, mangle)
-                debug('  --> tomerge ', len(mList))
-                if len(mList)<2:
-                    delattr(seg, 'merged')
-                    updatedSegs.append(seg)
-                    continue
-                points= numpy.concatenate( [p.points for p in mList] )
-                newseg = fitSingleSegment(points)
-                if newseg.quality()>q:
-                    delattr(seg, 'merged')
-                    updatedSegs.append(seg)
-                    continue
-                for p in mList:
-                    setattr(seg, 'merged',True)
-                newseg.sourcepoints = seg.sourcepoints
-                debug('  --> post merge qual = ', newseg.quality() , seg.pointN, ' --> ', newseg.pointN, newseg.angle)
-                newseg.startIndexSource = mList[0].startIndexSource
-                newseg.prev = mList[0].prev
-                newseg.next = mList[-1].next
-                updatedSegs.append(newseg)
-            if not hasattr(segList[-1], 'merged') : updatedSegs.append( segList[-1])
-            return updatedSegs
 
         if self.options.segAngleMergeEnable:
-            newSegs = mergeList( newSegs , mangle=0.2 )
+            newSegs = mergeConsecutiveCloseAngles( newSegs , mangle=0.2 )
             newSegs=resetPrevNextSegment(newSegs)
             debug(' __ 2nd angle merge')
-            newSegs = mergeList( newSegs, mangle=0.35 ) # 2nd pass
+            newSegs = mergeConsecutiveCloseAngles( newSegs, mangle=0.35 ) # 2nd pass
             newSegs=resetPrevNextSegment(newSegs)
             debug('after merge ', len(newSegs), newSegs)
             # Check if first and last also have close angles.
@@ -1670,7 +1659,6 @@ class ShapeReco(inkex.Effect):
                         # force merge
                         points= numpy.concatenate( [  last.points, first.points] )
                         newseg = fitSingleSegment(points)
-                        newseg.startIndexSource=0
                         newseg.next = first.next
                         last.prev.next = None
                         newSegs[0]=newseg
