@@ -71,11 +71,41 @@ def toArray(parsedList):
     #
     x,y, w,h = computeBox(a)
     sizeC = 0.5*(w+h)
-    deltas =  a[1:] - a[:-1] 
+    #deltas = numpy.zeros((len(a),2) )
+    deltas = a[1:] - a[:-1] 
+    #deltas[-1] = a[0] - a[-1]
+    deltaD = numpy.sqrt(numpy.sum( deltas**2, 1 ))
+    sortedDind = numpy.argsort(deltaD)
+    # expand longuest segments
+    nexp = int(len(deltaD)*0.9)
+    newpoints=[ None ]*len(a)
+    medDelta = deltaD[sortedDind[len(deltaD)/2] ]
+    for i,ind in enumerate(sortedDind):
+        if deltaD[ind]/sizeC<0.005: continue
+        if i>nexp:
+            np = int(deltaD[ind]/medDelta)
+            pL = [a[ind]]
+            #print i,'=',ind,'adding ', np,'  _ ', deltaD[ind], a[ind], a[ind+1]
+            for j in range(np-1):
+                f = float(j+1)/np
+                #print '------> ', (1-f)*a[ind]+f*a[ind+1]
+                pL.append( (1-f)*a[ind]+f*a[ind+1] )
+            newpoints[ind] = pL
+        else:
+            newpoints[ind]=[a[ind]]
+    if(D(a[0],a[-1])/sizeC > 0.005 ) :
+        newpoints[-1]=[a[-1]]
+
+    points = numpy.concatenate([p for p in newpoints if p!=None] )
+    ## print ' medDelta ', medDelta, deltaD[sortedDind[-1]]
+    ## print len(a) ,' ------> ', len(points)
+
     rel_norms = numpy.sqrt(numpy.sum( deltas**2, 1 )) / sizeC
     keep = numpy.concatenate([numpy.where( rel_norms >0.005 )[0],numpy.array([len(a)-1])])
 
-    return a[keep] , [ parsedList[i] for i in keep]
+    #return a[keep] , [ parsedList[i] for i in keep]
+    #print len(a),' ',len(points)
+    return points , []
 
 rotMat = numpy.matrix( [[1,-1],[1,1]] )/numpy.sqrt(2)
 unrotMat = numpy.matrix( [[1,1],[-1,1]] )/numpy.sqrt(2)
@@ -135,6 +165,11 @@ def dirAndLength(p1,p2):
 def length(p1,p2):
     return sqrt( D2(p1,p2) )
 
+def barycenter(points):
+    """
+    """
+    return points.sum(axis=0)/len(points)
+
 
 # *************************************************************
 # debugging 
@@ -144,7 +179,7 @@ def debug_on(*l):
     #inkex.errormsg(' '.join(str(i) for i in l) ) 
     sys.stderr.write(' '.join(str(i) for i in l) +'\n') 
 debug = void
-#debug = debug_on
+debug = debug_on
 
 # *************************************************************
 # Internal Objects
@@ -205,14 +240,14 @@ class Path(object):
         """Translate this path by tr"""
         self.points = self.points + tr
 
-    def formatedSegment(self, firstP=False):
-        if firstP:            
-            segment = [ ['M',[self.point1[0],self.point1[1] ] ],
-                        ['L',[self.pointN[0],self.pointN[1] ] ]
-                        ]
-        else:
-            segment = [ ['L',[self.pointN[0],self.pointN[1] ] ] ] 
-        return segment
+    def formatToSVG(self, firstP=False):
+        svgCommands = []
+        com = 'M' if firstP else 'L'
+        for p in self.points:
+            svgCommands.append( [com, [p[0], p[1]] ] )
+            com='L'
+        return svgCommands
+
 
     def setIntersectWithNext(self, next=None):
         pass
@@ -221,7 +256,7 @@ class Path(object):
         """ Returns the combination of self and self.next.
         sourcepoints has to be set
         """
-        if newPath is None: newPath = Path( self.sourcepoints[self.startIndexSource:self.startIndexSource+len(self.points)+len(self.next.points)] )
+        if newPath is None: newPath = Path( numpy.concatenate([self.points, self.next.points]) )
 
         newPath.sourcepoints = self.sourcepoints
         newPath.startIndexSource = self.startIndexSource
@@ -392,6 +427,10 @@ class Segment(Path):
         return min(self.variance()/self.length*numpy.sqrt(n) , 1000)
 
     def formatedSegment(self, firstP=False):
+        return self.formatToSVG(firstP)
+    
+    def formatToSVG(self, firstP=False):
+
         if firstP:            
             segment = [ ['M',[self.point1[0],self.point1[1] ] ],
                         ['L',[self.pointN[0],self.pointN[1] ] ]
@@ -412,27 +451,24 @@ class Segment(Path):
 
 
 
-    def mergedWithNext(self):
+    def mergedWithNext(self, doRefit=True):
         """ Returns the combination of self and self.next.
         sourcepoints has to be set
         """
         spoints = numpy.concatenate([self.points,self.next.points])
-        newSeg = fitSingleSegment(spoints)
+
+        if doRefit:
+            newSeg = fitSingleSegment(spoints)
+        else:
+            newSeg = Segment.fromCenterAndDir(barycenter(spoints), self.unitv, spoints)
         
         newSeg = Path.mergedWithNext(self, newSeg)
-        if newSeg.next:
-            if newSeg.next.isSegment():
-                newSeg.deltaAngle = abs(newSeg.angle - newSeg.next.angle)
-            else:
-                newSeg.deltaAngle = 10
         return newSeg
 
     
 
-    def barycenter(self):
+    def center(self):
         return 0.5*(self.point1+self.pointN)
-    def barycenter_origin(self):
-        return self.points.sum(axis=0)/len(self.points)
 
     def box(self):
         return computeBox(self.points)
@@ -451,6 +487,7 @@ class Segment(Path):
 
         self.a,self.b,self.c = parametersFromPointAngle( 0.5*(self.point1+self.pointN), self.newAngle)
 
+        #print 'adjustToNewAngle ', self, self.angle, self.newAngle
         self.angle = self.newAngle
         self.normalv = numpy.array( [ self.a, self.b ])
         self.unitv = numpy.array( [ self.b, -self.a ])
@@ -499,6 +536,7 @@ class PathGroup(object):
     listOfPaths = []
     refSVGPathList = []
     isClosing = False
+    refNode = None
     
     def __init__(self, listOfPaths, refSVGPathList, refNode=None, isClosing=False):
         self.refNode = refNode
@@ -507,10 +545,15 @@ class PathGroup(object):
         self.isClosing=isClosing
         
     def addToNode(self, node):
-        newList = reformatList( self.refSVGPathList, self.listOfPaths)        
+        newList = reformatList( self.listOfPaths)        
         ele = addPath( newList , node)
         debug("PathGroup ", newList)
         return ele
+
+    def setNodeStyle(self,ele, node):
+        style = node.get('style')
+        ele.set('style', style)
+        
 
 
     @staticmethod
@@ -526,10 +569,16 @@ class TangentEnvelop(PathGroup):
     def addToNode(self, node):
         newList = [ ]
         for s in self.listOfPaths:
-            newList += s.formatedSegment(firstP=True)
+            newList += s.formatToSVG(firstP=True)
         debug("TangentEnvelop ", newList)
         ele = addPath( newList , node)
         return ele
+
+    def setNodeStyle(self,ele, node):
+        style = node.get('style')+';marker-end:url(#Arrow1Lend)'
+        style
+        ele.set('style', style)
+
 
 class Circle(PathGroup):
     """Specialization where the list of Path objects
@@ -616,6 +665,7 @@ class Rectangle(PathGroup):
     def isRectangle( pathGroup):
         """Check if the segments in pathGroups can form a rectangle.
         Returns a Rectangle or None"""
+        #print 'xxxxxxxx isRectangle',pathGroups
         if isinstance(pathGroup, Circle ): return None
         segmentList = [p for p in pathGroup.listOfPaths if p.isSegment() ]#or p.effectiveNPoints >0]
         if len(segmentList) != 4:
@@ -628,7 +678,7 @@ class Rectangle(PathGroup):
             return None
         
         Aac , Abd = closeAngleAbs(a.angle,c.angle), closeAngleAbs(b.angle , d.angle)
-        if  min(Aac,Abd) > 0.01 or max(Aac, Abd) >0.17 :
+        if  min(Aac,Abd) > 0.07 or max(Aac, Abd) >0.27 :
             debug( 'rectangle Failed at angles', Aac, Abd)
             return None
         notsimilarL = lambda d1,d2: abs(d1-d2)>0.20*min(d1,d2)
@@ -711,20 +761,23 @@ def smoothArray(a, n=2):
     for i in range(1,n+1):
         smootha[:-i] += a[i:]
         smootha[i:]  += a[:-i]
-    #print smootha
     return smootha/count
 
-def buildTangents( points , averaged=True):
+def buildTangents( points , averaged=True, isClosing=False):
     """build tangent vectors to the curve 'points'.
     if averaged==True, the tangents are averaged with their direct neighbours (use case : smoother tangents)"""
     tangents = numpy.zeros( (len(points),2) )
     i=1
-    tangents[:-i] += points[i:] - points[:-i] 
-    tangents[i:]  += points[i:] - points[:-i] 
-
+    tangents[:-i] += points[i:] - points[:-i] # i <- p_i+1 - p_i 
+    tangents[i:]  += points[i:] - points[:-i] # i <- p_i - p_i-1
+    if isClosing:
+        tangents[0] += tangents[0] - tangents[-1]
+        tangents[-1] += tangents[0] - tangents[-1]
     tangents *= 0.5
-    tangents[0] *=2
-    tangents[-1] *=2
+    if not isClosing:
+        tangents[0] *=2
+        tangents[-1] *=2
+
 
     ## debug('points ', points)
     ## debug('buildTangents --> ', tangents )
@@ -734,9 +787,13 @@ def buildTangents( points , averaged=True):
         avTan = numpy.array(tangents)
         avTan[:-1] += tangents[1:]
         avTan[1:]  += tangents[:-1]
+        if isClosing:
+            tangents[0]+=tangents[-1]
+            tangents[1]+=tangents[0]
         avTan *= 1./3
-        avTan[0] *=1.5
-        avTan[-1] *=1.5
+        if not isClosing:
+            avTan[0] *=1.5
+            avTan[-1] *=1.5
 
     return avTan
 
@@ -838,7 +895,7 @@ def mergeConsecutiveParralels(segments):
         d = closeAngleAbs(s.angle ,s.next.angle)
         if d<0.001:
             debug("merging ", s.angle ,s.next.angle )
-            snew = s.mergedWithNext()
+            snew = s.mergedWithNext(doRefit=False)
             ignoreNext=True
             newList.append(snew)
         else:
@@ -866,27 +923,27 @@ class SegmentExtender:
         p = self.getNext(seg) # prev or next
         while p :
             if p.isSegment(): break
+            if p.mergedObj is None: break
             pL.append(p)
             p = self.getNext(p)
         if pL==[]:
-            return [], []
-        i0=pL[0].startIndexSource
-        iN = pL[-1].startIndexSource+len(pL[-1].points)+1
-        return pL, seg.sourcepoints[i0:iN]
+            return []
+        return pL
 
     def extend(self,seg):
-        nextPathL, pointsToTest = self.nextPaths(seg)
-        debug('extend ',self.extDir, seg , nextPathL)
+        nextPathL = self.nextPaths(seg)
+        debug('extend ',self.extDir, seg , nextPathL, seg.length , len(nextPathL))
         if nextPathL==[]: return seg
-        distancesToLine =abs(seg.a*pointsToTest[:,0]+seg.b*pointsToTest[:,1]+seg.c)
+        pointsToTest = numpy.concatenate( [p.points for p in nextPathL] )
         mergeD = seg.length*self.relD
-        pointsToFit, addedPoints = self.pointsToFit(seg,pointsToTest, distancesToLine, mergeD)
+        #print seg.point1 , seg.pointN,  pointsToTest
+        pointsToFit, addedPoints = self.pointsToFit(seg,pointsToTest , mergeD)
         if len(pointsToFit)==0:
             return seg
         newseg = fitSingleSegment(pointsToFit)
         if newseg.quality()>self.fitQ: # fit failed
             return seg
-        #debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
+        debug( '  EXTENDING ! ', len(seg.points), len(addedPoints) )
         self.removePath(seg, newseg, nextPathL, addedPoints )
         newseg.points = pointsToFit
         seg.mergedObj= newseg
@@ -919,14 +976,16 @@ class FwdExtender(SegmentExtender):
     extDir='Fwd'
     def getNext(self, seg):
         return seg.next
-    def pointsToFit(self, seg, pointsToTest, distancesToLine, mergeD):
+    def pointsToFit(self, seg, pointsToTest, mergeD):
+        distancesToLine =abs(seg.a*pointsToTest[:,0]+seg.b*pointsToTest[:,1]+seg.c)        
+        goodInd=len(pointsToTest)
         for i,d in reversed(list(enumerate(distancesToLine))):
-            if d<mergeD: break
-        addedPoints = pointsToTest[i:]
+            if d<mergeD: goodInd=i;break
+        addedPoints = pointsToTest[:len(pointsToTest-goodInd)]
         #debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
         return  numpy.concatenate([seg.points, addedPoints]), addedPoints
-    def removePath(self, seg, newseg, nextPathL, pointsToFit):
-        npoints = len(pointsToFit)
+    def removePath(self, seg, newseg, nextPathL, addedPoints):
+        npoints = len(addedPoints)
         acc=0
         newseg.prev = seg.prev
         for p in nextPathL:
@@ -942,14 +1001,16 @@ class BwdExtender(SegmentExtender):
     extDir='Bwd'
     def getNext(self, seg):
         return seg.prev
-    def pointsToFit(self, seg, pointsToTest, distancesToLine, mergeD):
+    def pointsToFit(self, seg, pointsToTest,  mergeD):
+        distancesToLine =abs(seg.a*pointsToTest[:,0]+seg.b*pointsToTest[:,1]+seg.c)
+        goodInd=len(pointsToTest)        
         for i,d in enumerate(distancesToLine):
-            if d<mergeD: break
-        addedPoints = pointsToTest[:i+1]
+            if d<mergeD: goodInd=i; break
+        addedPoints = pointsToTest[goodInd:]
         #debug( ' ++ pointsToFit ' , mergeD, i ,len(pointsToTest), addedPoints , seg.points )
         return  numpy.concatenate([addedPoints, seg.points]), addedPoints
-    def removePath(self,seg, newseg, nextPathL, pointsToFit):
-        npoints = len(pointsToFit)
+    def removePath(self,seg, newseg, nextPathL, addedPoints):
+        npoints = len(addedPoints)
         acc=0
         newseg.next = seg.next                
         for p in reversed(nextPathL):
@@ -983,27 +1044,15 @@ def addPath(newList, refnode):
     refnode.xpath('..')[0].append(ele)
     return ele
 
-def reformatList( refSVGPathList, paths):
+def reformatList( listOfPaths):
     """ Returns a SVG paths list (same format as simplepath.parsePath) from a list of Path objects
      - Segments in paths are added in the new list
      - simple Path are retrieved from the original refSVGPathList and put in the new list (thus preserving original bezier curves)
     """
     newList = []
     first = True
-    for  seg in paths:
-        if seg.isSegment():
-            fseg = seg.formatedSegment(first)
-            newList +=fseg
-        else:
-            # we re-use the original path to make use of bezier curves contained in it.
-            # (our Path doesn't hold this info).
-            if first:
-                if seg.effectiveNPoints==0: # the 1st path has been removed. ignore it.
-                    continue
-                pos = seg.startIndexSource
-            else:
-                pos = seg.startIndexSource+1
-            newList += refSVGPathList[pos:pos+seg.effectiveNPoints]
+    for  seg in listOfPaths:        
+        newList += seg.formatToSVG(first)
         first = False
     return newList
 
@@ -1201,134 +1250,32 @@ class ShapeReco(inkex.Effect):
             #diag = getdiag(p.points)
             diag ,w, h = getdiag(p.points)
 
-            debug(p, p.pointN, ' removing edge  diag = ', diag, p.length,  '  l=',next.length+prev.length)
+            debug(p, p.pointN, ' removing edge  diag = ', diag, p.length,  '  l=',next.length+prev.length , 'totDim ', (wTot,hTot))
             debug( '    ---> ',prev, next)
-            if diag > (next.length+prev.length)*0.1 : continue
-            if w > 0.2*wTot or h > 0.2*hTot: continue # avoid removing if significant on total
-            # Avoid removing connecting path between 2 long rectangle side
-            dd = prev.distanceTo(next.pointN)
-            if abs(prev.unitv.dot(next.unitv))>0.98 and diag > dd*0.5: continue
-            #if diag > D(next.pointN, prev.point1)*0.5: continue
-            #if diag > dd*0.5: continue
-            remove(p)
 
-            if next != prev:
-                prev.setIntersectWithNext(next)
+
+            # remove last or first very small in anycase
+            doRemove = prev==next and (diag < 0.05*(wTot+hTot)*0.5 )
+            if not doRemove:
+                # check if this small
+                isLarge = diag > (next.length+prev.length)*0.1  # check size relative to neighbour
+                isLarge = isLarge or w > 0.2*wTot or h > 0.2*hTot # check size w.r.t total size
+                
+                # is it the small side of a long rectangle ?
+                dd = prev.distanceTo(next.pointN)
+                rect = abs(prev.unitv.dot(next.unitv))>0.98 and diag > dd*0.5
+                doRemove = not( isLarge or rect )
+
+            if doRemove:
+                remove(p)
+
+                if next != prev:
+                    prev.setIntersectWithNext(next)
         debug('removed Segments ', removeSeg)
         for p in removeSeg:
             paths.remove(p)
 
 
-    def distancesRatios(self, points):
-        """ DEPRECATED ??
-        Finds segment-like portions in a sequence of points.
-        input : points is a (N,2) shaped array
-        output : a list of Segment or Path objects
-
-        The idea used here is for aligned points D(p_i,p_n) = Sum(D_i,D_i-1) = S
-        So start from point 1, aggregate all following points as long as S is close to D, when this is not true or D(p_1,P_n)<D(p_1,p_n-1)
-        start a new segment.
-        All points in segments of length less than 4 are simply put into generic Path.
-        """
-        #points = self.origPoints
-        Np = len(points)
-        windowS= min( max( Np/10, 2) , 10 )
-
-        presegs = []
-        i=0
-        def pdistance(i,j):
-            return numpy.sqrt( ((points[i]-points[j])**2).sum() )
-
-        # aggregates points into candidate segments (presegs)
-        while i < Np-1:
-            # start a new preseg with point i
-            next = i
-            #sumD = dmat[i,next]
-            sumD =  0
-            lastD = sumD
-            curD = sumD
-            r = 1
-            # loop on next points as long as they're compatible with a segment.
-            while r < 1.15 and curD >= lastD and next< Np-1:
-                next += 1
-                #curD = dmat[next-1,neaxt]
-                lastD =curD
-                curD = max(pdistance(i,next) , 1e-12)
-                sumD += pdistance(next-1,next)
-                r = sumD/curD
-            # mark the start and end position of the pre-segment
-            next -=1            
-            presegs.append( (i,next) )
-            #print (i,next) ,'  r=',r
-            i = next +1
-        presegs[ -1 ] = ( presegs[-1][0],presegs[-1][1]+1 ) #append the last point
-
-        #  convert to Segment:
-        minNpointInSeg = min(4,max(Np/20,2))
-        segs = []
-        for (b,e) in presegs:
-            if e+1-b<4: # less than 4 points, not a Segment
-                seg = Path(points[b:e+1])
-            else: # comute the segment (fit a line equation)
-                seg = fitSingleSegment(points[b:e+1])
-                debug('  seg at ',(b,e),seg.dump())
-                if seg.quality() > Segment.QUALITYCUT : # fit failed. Not a segment
-                    seg = Path(points[b:e+1])
-            seg.startIndexSource = b
-            seg.sourcepoints = points
-            segs.append( seg )
-        # assign next and previous :
-        for p,pnext in zip(segs[:-1] , segs[1:]):
-            p.next = pnext
-            pnext.prev = p
-        if len(segs)>1 :segs[-1].prev = segs[-2]
-
-            
-
-        # merge consecutive Path objects 
-        mergedpaths = []
-        nseg = len(segs)
-        def mergeConsecutivePath(p, pathStart=0):
-            nexts = 0
-            nextp = p.next
-            if  p.isSegment() :
-                yield p
-                if p.next is None:
-                    return
-                nexts = p.next.startIndexSource
-            elif p.next is None or p.next.isSegment() :
-                newp = Path( points[pathStart:p.startIndexSource+p.effectiveNPoints] )                
-                newp.startIndexSource = pathStart
-                yield newp
-                if p.next is None:
-                    return
-                nexts = p.next.startIndexSource
-            else:
-                nexts = pathStart
-            #print ' merging cont  ... ',nextp.dump(), nexts
-            for op in mergeConsecutivePath(nextp, nexts):
-                yield op
-
-        segs =[ p for p in mergeConsecutivePath(segs[0],0) ]    
-        
-        # merge consecutive segments if they have similar angles
-        # compute delta angles
-        for p in segs:
-            if p.isSegment() and p.next and p.next.isSegment():                
-                p.deltaAngle = abs(p.angle - p.next.angle)
-            else:
-                p.deltaAngle = 10
-        pmin = min( segs, key = lambda x:x.deltaAngle)
-        while pmin.deltaAngle < 0.13962: # degree
-            spoints = points[pmin.startIndexSource:pmin.next.startIndexSource+len(pmin.next.points)]
-            newSeg  = pmin.mergedWithNext(  ) 
-
-            segs.remove(pmin)
-            segs.remove(pmin.next)
-            segs.append(newSeg)
-            pmin = min( segs, key = lambda x:x.deltaAngle)
-        
-        return segs
             
             
     
@@ -1348,7 +1295,7 @@ class ShapeReco(inkex.Effect):
             meanA = angles[list(cl)].mean()
             for i in cl:
                 seg = segs[i]
-                seg.newAngle = meanA if seg.angle>0 else meanA-_pi
+                seg.newAngle = meanA if seg.angle>=0. else meanA-_pi
 
 
     def prepareDistanceEqualization(self,segs, relDelta=0.1):
@@ -1424,9 +1371,9 @@ class ShapeReco(inkex.Effect):
         paths : a list of segments"""
         for seg in paths:
             a = seg.tempAngle()
-            i = (abs(knownAngle - a )).argmin()
+            i = (abs(vec_in_mPi_pPi(knownAngle - a) )).argmin()
             seg.newAngle = knownAngle[i]
-            debug( '  Known angle ', seg.tempAngle(),'  -> ', knownAngle[i]) 
+            debug( '  Known angle ', seg, seg.tempAngle(),'  -> ', knownAngle[i]) 
             ## if abs(knownAngle[i] - a) < 0.08:
 
         
@@ -1450,23 +1397,28 @@ class ShapeReco(inkex.Effect):
         """
         if len(points)<10:
             return False, 0
+
+        if all(points[0]==points[-1]): # last exactly equals the first.
+            # Ignore last point for this check
+            points = points[:-1]
+            tangents = tangents[:-1]
+            #print 'Removed last ', points
         xmin,ymin, w, h = computeBox( points)
         diag2=(w*w+h*h)
         
         diag = sqrt(diag2)*0.5
         norms = numpy.sqrt(numpy.sum( tangents**2, 1 ))
 
-        angles = numpy.arccos( tangents[:,0] /norms ) *numpy.sign( tangents[:,1] )
+        angles = numpy.arctan2(  tangents[:,1], tangents[:,0] )  
         #debug( 'angle = ', repr(angles))
         N = len(angles)
-        # shift everything before smoothing
-        angles += _twopi
-        angles = smoothArray(angles, n=max(int(N*0.03),2) )
-        angles -= _twopi # shift back
+        ## # shift everything before smoothing
+        ## angles += _twopi
+        ## angles = smoothArray(angles, n=max(int(N*0.03),2) )
+        ## angles -= _twopi # shift back
         
         deltas =  points[1:] - points[:-1] 
-        deltasD = numpy.concatenate([ [0.], numpy.sqrt(numpy.sum( deltas**2, 1 )) / diag] )
-
+        deltasD = numpy.concatenate([ [D(points[0],points[-1])/diag], numpy.sqrt(numpy.sum( deltas**2, 1 )) / diag] )
 
         # locate and avoid the point when swicthing
         # from -pi to +pi. The point is around the minimum
@@ -1474,12 +1426,14 @@ class ShapeReco(inkex.Effect):
         debug(' imin ',imin)
         angles = numpy.roll(angles, -imin)
         deltasD = numpy.roll(deltasD, -imin)
-        n=int(N*0.15)
+        n=int(N*0.1)
         # avoid by removing points around the min
         angles=angles[n:-n]
         deltasD=deltasD[n:-n]
         deltasD = deltasD.cumsum()
         N = len(angles)
+
+        angles = smoothArray(angles, n=max(int(N*0.03),2) )
 
         deltaA = angles[1:] - angles[:-1]
         deltasDD =  (deltasD[1:] -deltasD[:-1])
@@ -1492,19 +1446,15 @@ class ShapeReco(inkex.Effect):
                 belowT = False
             belowT= (v<6)
 
-        self.temp = (deltasD,angles, [], dAdD )
-        fracStraight = numpy.sum(deltasDD[numpy.where(dAdD<0.4)])/(deltasD[-1]-deltasD[0])
+        self.temp = (deltasD,angles, tangents, dAdD )
+        fracStraight = numpy.sum(deltasDD[numpy.where(dAdD<0.3)])/(deltasD[-1]-deltasD[0])
         curveLength = deltasD[-1]/3.14
         #print "SSS ",count , fracStraight
-        if curveLength> 1.5:
+        if curveLength> 1.4 or fracStraight>0.4 or count > 6:
             isCircle =False
-        elif  count < 3:
-            isCircle = True
-        elif count > 8:
-            isCircle=False
         else: 
-            isCircle= (count < 5 and fracStraight<=0.3) or \
-                      (fracStraight<=0.3 and curveLength<1.10)
+            isCircle= (count < 4 and fracStraight<=0.3) or \
+                      (fracStraight<=0.1 and count<5)
 
         if not isCircle:
             return False, 0
@@ -1566,11 +1516,16 @@ class ShapeReco(inkex.Effect):
         maxDim = max(wTot, hTot)
         isClosing = aR*0.2 > d/maxDim
         debug('isClosing ', isClosing, maxDim, d)
+        if d==0:
+            # then we remove the last point to avoid null distance
+            # in other calculations
+            sourcepoints = sourcepoints[:-1]
+            svgCommandsList = svgCommandsList[:-1]
 
         if len(sourcepoints) < 4:
             return PathGroup.toSegments(sourcepoints, svgCommandsList, refNode, isClosing=isClosing)
         
-        tangents = buildTangents(sourcepoints)
+        tangents = buildTangents(sourcepoints, isClosing=isClosing)
 
         # global quantities :
 
@@ -1589,6 +1544,7 @@ class ShapeReco(inkex.Effect):
                     circ = Circle((x,y),rmin,  refNode, rmax=rmax, angle=angle)
                 circ.points = sourcepoints
                 return circ
+        # -----------------------
             
 
 
@@ -1646,25 +1602,11 @@ class ShapeReco(inkex.Effect):
         # Extend segments -----------------------------------
         if self.options.segExtensionEnable:
             newSegs = SegmentExtender.extendSegments( newSegs, self.options.segExtensionDtoSeg, self.options.segExtensionQual )
-            resetStartIndexes(newSegs)
-            newSegs = resetPrevNextSegment( updatedSegs )
+            debug("extended segs", newSegs)
+            newSegs = resetPrevNextSegment( newSegs )
             debug("extended segs", newSegs)
 
         # ----------------------------------------
-
-        ## # convert 1 point Path into 2 Segments to its prev and next
-        ## updatedSegs =[newSegs[0]]
-        ## for p in newSegs[1:-1]:
-        ##     if p.isSegment() or len(p.points)>1:
-        ##         updatedSegs.append(p)
-        ##         continue            
-        ##     newseg1 = Segment.from2Points(p.prev.points[-1], p.points[0], p.points)
-        ##     newseg1.startIndexSource = p.startIndexSource
-        ##     newseg2 = Segment.from2Points(p.points[0], p.next.points[0], p.points)
-        ##     newseg2.startIndexSource = p.startIndexSource
-        ##     updatedSegs +=[ newseg1, newseg2 ]
-        ## updatedSegs.append(newSegs[-1])
-        ## newSegs=resetPrevNextSegment(updatedSegs)
             
 
         # ---------------------------------------
@@ -1675,7 +1617,8 @@ class ShapeReco(inkex.Effect):
             setattr(seg, 'merged', True)
             if seg.next and seg.next.isSegment() :
                 debug('merging segs ', seg.angle, ' with : ' ,seg.next.point1, seg.next.pointN, ' ang=',seg.next.angle)
-                if closeAngleAbs( seg.angle, seg.next.angle) < mangle:
+                #if closeAngleAbs( seg.angle, seg.next.angle) < mangle:
+                if deltaAngleAbs( seg.angle, seg.next.angle) < mangle:
                     l += toMerge(seg.next,mangle)
             ## if seg.next and len(seg.next.points)==1:
             ##     l+=[seg.next] # try to merge a 1-point path
@@ -1695,7 +1638,6 @@ class ShapeReco(inkex.Effect):
                     delattr(seg, 'merged')
                     updatedSegs.append(seg)
                     continue
-                #points= seg.sourcepoints[mList[0].startIndexSource:mList[-1].startIndexSource+len(mList[-1].points)+1]
                 points= numpy.concatenate( [p.points for p in mList] )
                 newseg = fitSingleSegment(points)
                 if newseg.quality()>q:
@@ -1721,7 +1663,7 @@ class ShapeReco(inkex.Effect):
             newSegs=resetPrevNextSegment(newSegs)
             debug('after merge ', len(newSegs), newSegs)
             # Check if first and last also have close angles.
-            if isClosing:
+            if isClosing and len(newSegs)>2 :
                 first ,last = newSegs[0], newSegs[-1]
                 if first.isSegment() and last.isSegment():
                     if closeAngleAbs( first.angle, last.angle) < 0.1:
@@ -1753,30 +1695,6 @@ class ShapeReco(inkex.Effect):
         return PathGroup(newSegs, svgCommandsList, refNode, isClosing)
 
 
-    def simplifyPath(self, parsedpath, refNode):
-        """ OBSOLETE ? Run the segment extraction technique on parsed path.
-        returns a list of Segments or Paths"""
-        a, parsedpath = toArray(parsedpath)
-        self.currentPoints = a
-
-
-        def distancesRatios():
-            debug("DDD")
-            self.segs = self.distancesRatios(self.currentPoints)
-            self.segs.sort( key = lambda x : x.startIndexSource  )
-            resetPrevNextSegment(self.segs)
-            self.removeSmallEdge(self.segs)
-
-            return self.segs
-
-        paths = distancesRatios()
-        for p in paths:
-            if p.isSegment() and p.next:
-                p.setIntersectWithNext()
-                
-        return PathGroup(paths, parsedpath, refNode )
-
-
 
     def extractShapesFromID( self, *nids, **options ):
         """for debugging purpose """
@@ -1790,8 +1708,8 @@ class ShapeReco(inkex.Effect):
         class tmp:
             pass
 
-        self.options = self.OptionParser.parse_args(**options)[0]
-
+        self.options = self.OptionParser.parse_args()[0]
+        self.options._update_careful(options)
         nodes=self.extractShapes(eList)
         self.shape = nodes[0]
 
@@ -1807,6 +1725,7 @@ class ShapeReco(inkex.Effect):
         if node.tag.endswith('path'):
             parsedSVGCommands = node.get('d')
             g = self.segsFromTangents(simplepath.parsePath(parsedSVGCommands), node)
+            #g = self.tangentEnvelop(simplepath.parsePath(parsedSVGCommands), node)
         elif node.tag.endswith('rect'):
             tr = node.get('transform',None)
             if tr and tr.startswith('matrix'):
@@ -1840,7 +1759,7 @@ class ShapeReco(inkex.Effect):
 
         # uniformize shapes
         if self.options.doUniformization:
-            self.uniformizeShapes(analyzedNodes)
+            analyzedNodes = self.uniformizeShapes(analyzedNodes)
 
         return analyzedNodes
 
@@ -1875,22 +1794,24 @@ class ShapeReco(inkex.Effect):
                 debug('Closing intersec ', g.listOfPaths[0].point1, g.listOfPaths[0].pointN )
                 g.listOfPaths[-1].setIntersectWithNext(g.listOfPaths[0])  
 
+
         circles=[ group for group in pathGroupList if isinstance(group, Circle)]
         if self.options.doEqualizeRadius:
             self.prepareRadiusEqualization(circles, allShapeDist)
         if self.options.doCenterCircOnSeg:
             self.centerCircOnSeg(circles, allSegs)
 
+        pathGroupList = [toRemarkableShape(g) for g in pathGroupList]
+        return pathGroupList
         
         
     def addShapesToDoc(self, pathGroupList):
         for group in pathGroupList:            
             debug("final ", group.listOfPaths, group.refNode )
             # change to Rectangle if possible :
-            finalshape = toRemarkableShape( group )
-            ele = finalshape.addToNode( group.refNode)
-            style = group.refNode.get('style')
-            ele.set('style', style)
+            #finalshape = toRemarkableShape( group )
+            ele = group.addToNode( group.refNode)
+            group.setNodeStyle(ele, group.refNode)
             if not self.options.keepOrigin:
                 group.refNode.xpath('..')[0].remove(group.refNode)
 

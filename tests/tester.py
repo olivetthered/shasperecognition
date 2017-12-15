@@ -76,17 +76,14 @@ def readTangents( nid , aSize=0.1, doPrint=False):
     res = e.checkForCircle(points, tg)
     e.points = points
     e.tg =tg
-    (deltasD,angles, fits , dist_to_fit) = e.temp
-    clList=shapereco.clusterValues(angles,aSize,refScaleAbs='abs')
-    clList.sort(key=lambda cl:len(cl))    
+    (deltasD,angles, fits , dAdD) = e.temp
+    #clList=shapereco.clusterValues(angles,aSize,refScaleAbs='abs')
+    #clList.sort(key=lambda cl:len(cl))    
     #print [len(cl) for cl in clList]
     #print (len(clList[-1])+len(clList[-2]))/float(len(angles))
     #print res
-
-    deltaA = angles[1:] - angles[:-1]
     deltasDD =  (deltasD[1:] -deltasD[:-1])
-    deltasDD[numpy.where(deltasDD==0.)] = 1e-5*deltasD[0]
-    dAdD = abs(deltaA/deltasDD)
+
     belowT, count = True,0
     x,y,w,h = shapereco.computeBox(points)
     for i,v in enumerate(dAdD):
@@ -96,20 +93,20 @@ def readTangents( nid , aSize=0.1, doPrint=False):
         belowT= (v<6)
 
     if doPrint:
-        print 'cl Lsit =',clList
-        print 'dist to fit=', dist_to_fit
-    #return dist_to_fit[int(len(angles)*0.9)], (len(clList[-1])+len(clList[-2]))/float(len(angles)) , len(clList)/float(len(angles))
-    #return dist_to_fit[int(len(angles)*0.6)], len([c for c in clList if len(c)<3])/float(len(angles)), len(clList)/float(len(angles))
-    return deltasD[-1]/3.14, count, numpy.sum(deltasDD[numpy.where(dAdD<0.4)])/(deltasD[-1]-deltasD[0])
+        print 'deltasD ',deltasD
+        print 'deltasDD ',deltasDD
+        #print 'dist to fit=', dist_to_fit
+    return deltasD[-1]/3.14, count, numpy.sum(deltasDD[numpy.where(dAdD<0.3)])/(deltasD[-1]-deltasD[0])
+    #return max(dAdD), count, numpy.sum(deltasDD[numpy.where(dAdD<0.4)])/(deltasD[-1]-deltasD[0])
     
 def testMany(aSize=0.1):
 
 
-    rect=[ "path4725" ,"path5186" ,"path4494" ,"path6787", "path16095"]
+    rect=[ "path4725" ,"path5186" ,"path4494" ,"path6787", "path16095", "path9245"]
     
     cir=["path4511", "path4637" ,"path6181"    ,"path5062"    ,"path7415" ,"path9773" , "path9066", "path5531", "path5535", "path9291"]
     noconv = [   "path9362",  "path4661"] 
-    tri = ["path9285"]
+    tri = ["path9285","path9277"]
     
     lrec = [ readTangents(o,aSize) for o in rect ]
     lcir =[ readTangents(o,aSize) for o in cir ]
@@ -123,7 +120,29 @@ def testMany(aSize=0.1):
 def plotTangents( nid ):
     from  matplotlib import pyplot as plt
     readTangents(nid)
-    (deltasD,angles, a  , dist_to_fit) = e.temp
+    (deltasD,angles, tgts  , dist_to_fit) = e.temp
+    ax = plt.axes()
+    for i,t in enumerate(tgts):
+        p = e.points[i]
+        p1=p-0.5*t 
+        p2=p+0.5*t 
+        plt.plot([p1[0],p2[0]], [p1[1],p2[1]])
+        #ax.arrow(p1[0],p1[1],p2[0],p2[1])#,head_width=0.05, head_length=0.1, fc='k', ec='k')
+    plt.scatter(e.points[:,0],e.points[:,1])
+    for a,x, y in zip(angles, e.points[:, 0], e.points[:, 1])[:10]:
+        label= '%1.2f'%(a,)
+        print a
+        plt.annotate(
+            label,
+            xy=(x, y), xytext=(-5, 5),textcoords='offset points', ha='right', va='bottom',
+            )
+    plt.grid()
+    plt.show()
+
+def plotAngles( nid ):
+    from  matplotlib import pyplot as plt
+    readTangents(nid)
+    (deltasD,angles, tgts  , dist_to_fit) = e.temp
     angles_vs_d = numpy.stack([ deltasD, angles] ,1)
     seg =shapereco.regLin( angles_vs_d )
     fits = -(seg.a*angles_vs_d[:,0]+seg.c)/seg.b
@@ -132,7 +151,7 @@ def plotTangents( nid ):
     deltasDD =  (deltasD[1:] -deltasD[:-1])
     deltasDD[numpy.where(deltasDD==0.)] = 1e-5*deltasD[0]
     dAdD = abs(deltaA/deltasDD)
-    plt.plot(deltasD, angles)
+    plt.plot(deltasD, angles, marker='o')
     plt.plot(deltasD, fits)
     #plt.plot(deltasD, dist_to_fit)
     plt.plot(deltasD[:-1], dAdD)
